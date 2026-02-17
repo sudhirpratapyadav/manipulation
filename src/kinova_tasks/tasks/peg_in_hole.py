@@ -20,6 +20,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -28,6 +29,7 @@ from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
+from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.velocity import mdp
 from mjlab.terrains import TerrainImporterCfg
@@ -104,28 +106,97 @@ def reset_hole_position(
     hole.write_mocap_pose_to_sim(pose, env_ids=env_ids)
 
 
-def object_position(
+def site_pos_relative_to_home(
     env: ManagerBasedRlEnv,
-    object_name: str,
+    entity_name: str,
+    site_names: tuple[str, ...],
+    home_pos: tuple[float, float, float] = (-0.024850, -0.482624, 0.174564),
 ) -> torch.Tensor:
-    """Return object root position relative to env origin (3D)."""
-    obj: Entity = env.scene[object_name]
-    return obj.data.root_link_pos_w - env.scene.env_origins
+    """Return entity site positions relative to the IK home pose.
+
+    Returns a flat vector of (num_sites * 3) values: [site0_xyz, site1_xyz, ...].
+    """
+    entity: Entity = env.scene[entity_name]
+    # home_pos is in local (robot-base) frame; convert to world
+    home_w = (
+        torch.tensor(home_pos, device=env.device)
+        .unsqueeze(0)
+        .expand(env.num_envs, -1)
+        + env.scene.env_origins
+    )
+
+    parts = []
+    for sname in site_names:
+        sid = entity.find_sites(sname)[0]
+        pos_w = entity.data.site_pos_w[:, sid].squeeze(1)  # (num_envs, 3)
+        parts.append(pos_w - home_w)
+
+    return torch.cat(parts, dim=-1)  # (num_envs, num_sites * 3)
 
 
-def ee_to_hole_reward(
+def ee_to_sites_distance(
     env: ManagerBasedRlEnv,
-    std: float,
-    hole_name: str = "hole",
+    target_entity: str,
+    target_site_names: tuple[str, ...],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
 ) -> torch.Tensor:
-    """Gaussian reward for EE proximity to hole."""
+    """Vector from EE (pinch_site) to each target site. Returns (num_sites * 3)."""
     robot: Entity = env.scene[asset_cfg.name]
-    hole: Entity = env.scene[hole_name]
-    ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
-    hole_pos = hole.data.root_link_pos_w
-    error = torch.sum(torch.square(ee_pos - hole_pos), dim=-1)
-    return torch.exp(-error / std**2)
+    ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)  # (N, 3)
+
+    target: Entity = env.scene[target_entity]
+    parts = []
+    for sname in target_site_names:
+        sid = target.find_sites(sname)[0]
+        site_pos = target.data.site_pos_w[:, sid].squeeze(1)  # (N, 3)
+        parts.append(site_pos - ee_pos)
+
+    return torch.cat(parts, dim=-1)
+
+
+def peg_to_hole_sites_distance(
+    env: ManagerBasedRlEnv,
+    peg_entity: str = "peg",
+    hole_entity: str = "hole",
+    peg_site_names: tuple[str, ...] = ("cylinder_start", "cylinder_end"),
+    hole_site_names: tuple[str, ...] = ("hole_top", "hole_bottom"),
+) -> torch.Tensor:
+    """Vector from each peg site to corresponding hole site. Returns (num_pairs * 3)."""
+    peg: Entity = env.scene[peg_entity]
+    hole: Entity = env.scene[hole_entity]
+
+    parts = []
+    for pname, hname in zip(peg_site_names, hole_site_names):
+        pid = peg.find_sites(pname)[0]
+        hid = hole.find_sites(hname)[0]
+        peg_pos = peg.data.site_pos_w[:, pid].squeeze(1)
+        hole_pos = hole.data.site_pos_w[:, hid].squeeze(1)
+        parts.append(hole_pos - peg_pos)
+
+    return torch.cat(parts, dim=-1)
+
+
+def peg_to_hole_reward(
+    env: ManagerBasedRlEnv,
+    std: float,
+    peg_entity: str = "peg",
+    hole_entity: str = "hole",
+    peg_site_names: tuple[str, ...] = ("cylinder_start", "cylinder_end"),
+    hole_site_names: tuple[str, ...] = ("hole_top", "hole_bottom"),
+) -> torch.Tensor:
+    """Gaussian reward for peg sites proximity to corresponding hole sites."""
+    peg: Entity = env.scene[peg_entity]
+    hole: Entity = env.scene[hole_entity]
+
+    error = torch.zeros(env.num_envs, device=env.device)
+    for pname, hname in zip(peg_site_names, hole_site_names):
+        pid = peg.find_sites(pname)[0]
+        hid = hole.find_sites(hname)[0]
+        peg_pos = peg.data.site_pos_w[:, pid].squeeze(1)
+        hole_pos = hole.data.site_pos_w[:, hid].squeeze(1)
+        error += torch.sum(torch.square(peg_pos - hole_pos), dim=-1)
+
+    return torch.nan_to_num(torch.exp(-error / std**2), nan=0.0)
 
 
 GRIPPER_CLOSED_JOINT_POS = {
@@ -140,6 +211,99 @@ GRIPPER_CLOSED_JOINT_POS = {
 }
 
 GRIPPER_JOINT_NAMES = tuple(GRIPPER_CLOSED_JOINT_POS.keys())
+
+
+def peg_out_of_bounds(
+    env: ManagerBasedRlEnv,
+    peg_entity: str = "peg",
+    hole_entity: str = "hole",
+    peg_site_name: str = "cylinder_end",
+    home_pos: tuple[float, float, float] = (-0.024850, -0.482624, 0.174564),
+    workspace_half: tuple[float, float, float] = (0.12, 0.12, 0.12),
+    hole_half: tuple[float, float, float] = (0.03, 0.03, 0.04),
+) -> torch.Tensor:
+    """Terminate if peg lower site is outside both workspace and hole boxes.
+
+    The peg must be inside at least one box to stay alive.
+
+    Box 1 (workspace): centered on home_pos (static per env), defined by
+        half-extents workspace_half.
+    Box 2 (hole): centered on current hole position (moves per env),
+        defined by half-extents hole_half.
+    """
+    peg: Entity = env.scene[peg_entity]
+    hole: Entity = env.scene[hole_entity]
+
+    sid = peg.find_sites(peg_site_name)[0]
+    pos_w = peg.data.site_pos_w[:, sid].squeeze(1)  # (N, 3)
+    pos_local = pos_w - env.scene.env_origins  # to local frame
+
+    # Workspace box: centered on home pose
+    home = torch.tensor(home_pos, device=env.device)
+    ws_half = torch.tensor(workspace_half, device=env.device)
+    in_workspace = ((pos_local >= home - ws_half) & (pos_local <= home + ws_half)).all(dim=-1)
+
+    # Hole box: centered on current hole position (per env)
+    hole_pos_local = hole.data.root_link_pos_w - env.scene.env_origins  # (N, 3)
+    h_half = torch.tensor(hole_half, device=env.device)
+    in_hole = ((pos_local >= hole_pos_local - h_half) & (pos_local <= hole_pos_local + h_half)).all(dim=-1)
+
+    return ~(in_workspace | in_hole)
+
+
+def peg_to_hole_error(
+    env: ManagerBasedRlEnv,
+    peg_entity: str = "peg",
+    hole_entity: str = "hole",
+    peg_site_names: tuple[str, ...] = ("cylinder_start", "cylinder_end"),
+    hole_site_names: tuple[str, ...] = ("hole_top", "hole_bottom"),
+) -> torch.Tensor:
+    """Mean Euclidean distance from peg sites to corresponding hole sites."""
+    peg: Entity = env.scene[peg_entity]
+    hole: Entity = env.scene[hole_entity]
+
+    total = torch.zeros(env.num_envs, device=env.device)
+    for pname, hname in zip(peg_site_names, hole_site_names):
+        pid = peg.find_sites(pname)[0]
+        hid = hole.find_sites(hname)[0]
+        peg_pos = peg.data.site_pos_w[:, pid].squeeze(1)
+        hole_pos = hole.data.site_pos_w[:, hid].squeeze(1)
+        total += torch.norm(peg_pos - hole_pos, dim=-1)
+
+    result = total / len(peg_site_names)
+    if torch.isnan(result).any():
+        nan_ids = torch.where(torch.isnan(result))[0][:3]
+        for eid in nan_ids:
+            i = eid.item()
+            for pname, hname in zip(peg_site_names, hole_site_names):
+                pid = peg.find_sites(pname)[0]
+                hid = hole.find_sites(hname)[0]
+                print(f"[NaN debug] env={i} {pname} site_id={pid} pos={peg.data.site_pos_w[i, pid]}")
+                print(f"[NaN debug] env={i} {hname} site_id={hid} pos={hole.data.site_pos_w[i, hid]}")
+    return result
+
+
+def reset_workspace_bounds(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    entity_name: str = "workspace_bounds",
+    home_pos: tuple[float, float, float] = (-0.024850, -0.482624, 0.174564),
+) -> None:
+    """Position workspace bounds visualization at home pose."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    entity: Entity = env.scene[entity_name]
+    n = len(env_ids)
+
+    pos = torch.tensor(home_pos, device=env.device).unsqueeze(0).expand(n, -1).clone()
+    pos = pos + env.scene.env_origins[env_ids]
+
+    quat = torch.zeros(n, 4, device=env.device)
+    quat[:, 0] = 1.0
+
+    pose = torch.cat([pos, quat], dim=-1)
+    entity.write_mocap_pose_to_sim(pose, env_ids=env_ids)
 
 
 def reset_gripper_joints_closed(
@@ -217,13 +381,6 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Observations ---
     actor_terms = {
-        "joint_pos": ObservationTermCfg(
-            func=mdp.joint_pos_rel,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
-            },
-            noise=Unoise(n_min=-0.01, n_max=0.01),
-        ),
         "joint_vel": ObservationTermCfg(
             func=mdp.joint_vel_rel,
             params={
@@ -231,25 +388,53 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
-        # EE to hole distance vector (3D)
-        "ee_to_hole": ObservationTermCfg(
-            func=manipulation_mdp.ee_to_object_distance,
+        # EE to peg cylinder_start (3D)
+        "ee_to_peg": ObservationTermCfg(
+            func=ee_to_sites_distance,
             params={
-                "object_name": "hole",
+                "target_entity": "peg",
+                "target_site_names": ("cylinder_start",),
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        # Hole position (3D)
-        "hole_pos": ObservationTermCfg(
-            func=object_position,
-            params={"object_name": "hole"},
+        # EE to hole top + bottom sites (6D)
+        "ee_to_hole": ObservationTermCfg(
+            func=ee_to_sites_distance,
+            params={
+                "target_entity": "hole",
+                "target_site_names": ("hole_top", "hole_bottom"),
+                "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
+            },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        # Peg position (3D)
-        "peg_pos": ObservationTermCfg(
-            func=object_position,
-            params={"object_name": "peg"},
+        # Peg start→hole top, peg end→hole bottom (6D)
+        "peg_to_hole": ObservationTermCfg(
+            func=peg_to_hole_sites_distance,
+            params={
+                "peg_entity": "peg",
+                "hole_entity": "hole",
+                "peg_site_names": ("cylinder_start", "cylinder_end"),
+                "hole_site_names": ("hole_top", "hole_bottom"),
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
+        # Hole top + bottom site positions relative to home (6D)
+        "hole_pos_home": ObservationTermCfg(
+            func=site_pos_relative_to_home,
+            params={
+                "entity_name": "hole",
+                "site_names": ("hole_top", "hole_bottom"),
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
+        # Peg start + end site positions relative to home (6D)
+        "peg_pos_home": ObservationTermCfg(
+            func=site_pos_relative_to_home,
+            params={
+                "entity_name": "peg",
+                "site_names": ("cylinder_start", "cylinder_end"),
+            },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "actions": ObservationTermCfg(func=mdp.last_action),
@@ -321,7 +506,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg(
                     "robot", actuator_names=("fingers_actuator",)
                 ),
-                "closed_ctrl": 204.0,
+                "closed_ctrl": 255.0,
             },
         ),
         # Position hole (mocap) on ground
@@ -330,8 +515,8 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "hole_entity_name": "hole",
-                "x_range": (-0.02, -0.02),
-                "y_range": (-0.5, -0.5),
+                "x_range": (-0.04, 0.04),
+                "y_range": (-0.52, -0.48),
                 "z_range": (0.02, 0.02),
             },
         ),
@@ -394,25 +579,17 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Rewards ---
     rewards = {
-        # EE proximity to hole (Gaussian, std=0.1)
-        "ee_to_hole": RewardTermCfg(
-            func=ee_to_hole_reward,
+        # Peg→hole approach (Gaussian, std=0.1)
+        "peg_to_hole": RewardTermCfg(
+            func=peg_to_hole_reward,
             weight=1.0,
-            params={
-                "std": 0.1,
-                "hole_name": "hole",
-                "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
-            },
+            params={"std": 0.1},
         ),
         # Tight insertion bonus (Gaussian, std=0.02)
         "insertion_precise": RewardTermCfg(
-            func=ee_to_hole_reward,
+            func=peg_to_hole_reward,
             weight=2.0,
-            params={
-                "std": 0.02,
-                "hole_name": "hole",
-                "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
-            },
+            params={"std": 0.02},
         ),
         "action_rate_l2": RewardTermCfg(
             func=mdp.action_rate_l2,
@@ -451,9 +628,34 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     terminations = {
         "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+        "nan_detection": TerminationTermCfg(func=nan_detection, time_out=False),
         "ee_ground_collision": TerminationTermCfg(
             func=manipulation_mdp.illegal_contact,
             params={"sensor_name": "ee_ground_collision"},
+        ),
+        "peg_out_of_bounds": TerminationTermCfg(
+            func=peg_out_of_bounds,
+            params={
+                "peg_entity": "peg",
+                "hole_entity": "hole",
+                "peg_site_name": "cylinder_end",
+                "home_pos": (-0.024850, -0.482624, 0.174564),
+                "workspace_half": (0.12, 0.12, 0.12),
+                "hole_half": (0.015, 0.015, 0.06),
+            },
+        ),
+    }
+
+    # --- Metrics ---
+    metrics = {
+        "peg_to_hole_error": MetricsTermCfg(
+            func=peg_to_hole_error,
+            params={
+                "peg_entity": "peg",
+                "hole_entity": "hole",
+                "peg_site_names": ("cylinder_start", "cylinder_end"),
+                "hole_site_names": ("hole_top", "hole_bottom"),
+            },
         ),
     }
 
@@ -490,6 +692,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         events=events,
         rewards=rewards,
         terminations=terminations,
+        metrics=metrics,
         curriculum=curriculum,
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.ASSET_BODY,

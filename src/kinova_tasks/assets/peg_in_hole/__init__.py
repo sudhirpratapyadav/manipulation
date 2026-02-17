@@ -13,6 +13,7 @@ from mjlab.entity import EntityCfg
 _HERE = Path(__file__).parent
 PEG_XML: Path = _HERE / "xmls" / "peg.xml"
 HOLE_XML: Path = _HERE / "xmls" / "hole.xml"
+WORKSPACE_BOUNDS_XML: Path = _HERE / "xmls" / "workspace_bounds.xml"
 
 
 ##
@@ -41,3 +42,13 @@ def get_peg_cfg() -> EntityCfg:
 def get_hole_cfg() -> EntityCfg:
     """Get a fresh hole configuration instance."""
     return EntityCfg(spec_fn=get_hole_spec)
+
+
+def get_workspace_bounds_spec() -> mujoco.MjSpec:
+    """Load workspace bounds MjSpec from XML."""
+    return mujoco.MjSpec.from_file(str(WORKSPACE_BOUNDS_XML))
+
+
+def get_workspace_bounds_cfg() -> EntityCfg:
+    """Get workspace bounds visualization entity."""
+    return EntityCfg(spec_fn=get_workspace_bounds_spec)

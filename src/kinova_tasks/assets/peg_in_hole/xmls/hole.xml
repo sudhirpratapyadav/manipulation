@@ -20,8 +20,10 @@
       <!-- Right wall (+X side) -->
       <geom type="box" name="hole_wall_right" size="0.0025 0.0075 0.025" pos="0.01 0 0.025" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
-      <!-- Object site for observations (at top center of hole) -->
+      <!-- Sites for observations -->
       <site name="object_site" pos="0 0 0.05" size="0.01" rgba="1 0 0 1"/>
+      <site name="hole_top" pos="0 0 0.05" size="0.008" rgba="1 0 0 1" group="0"/>
+      <site name="hole_bottom" pos="0 0 0.0" size="0.008" rgba="0 1 0 1" group="0"/>
     </body>
   </worldbody>
 </mujoco>
