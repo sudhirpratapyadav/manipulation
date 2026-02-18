@@ -200,14 +200,14 @@ def peg_to_hole_reward(
 
 
 GRIPPER_CLOSED_JOINT_POS = {
-    "right_driver_joint": 0.671,
+    "right_driver_joint": 0.503,
     "right_coupler_joint": 0.001,
-    "right_spring_link_joint": 0.673,
-    "right_follower_joint": -0.646,
-    "left_driver_joint": 0.671,
+    "right_spring_link_joint": 0.505,
+    "right_follower_joint": -0.485,
+    "left_driver_joint": 0.503,
     "left_coupler_joint": 0.001,
-    "left_spring_link_joint": 0.673,
-    "left_follower_joint": -0.646,
+    "left_spring_link_joint": 0.505,
+    "left_follower_joint": -0.485,
 }
 
 GRIPPER_JOINT_NAMES = tuple(GRIPPER_CLOSED_JOINT_POS.keys())
@@ -271,15 +271,6 @@ def peg_to_hole_error(
         total += torch.norm(peg_pos - hole_pos, dim=-1)
 
     result = total / len(peg_site_names)
-    if torch.isnan(result).any():
-        nan_ids = torch.where(torch.isnan(result))[0][:3]
-        for eid in nan_ids:
-            i = eid.item()
-            for pname, hname in zip(peg_site_names, hole_site_names):
-                pid = peg.find_sites(pname)[0]
-                hid = hole.find_sites(hname)[0]
-                print(f"[NaN debug] env={i} {pname} site_id={pid} pos={peg.data.site_pos_w[i, pid]}")
-                print(f"[NaN debug] env={i} {hname} site_id={hid} pos={hole.data.site_pos_w[i, hid]}")
     return result
 
 
@@ -343,9 +334,9 @@ def reset_gripper_ctrl_closed(
     asset_cfg: SceneEntityCfg = SceneEntityCfg(
         "robot", actuator_names=("fingers_actuator",)
     ),
-    closed_ctrl: float = 255.0,
+    closed_ctrl: float = 191.25,
 ) -> None:
-    """Set the fingers_actuator ctrl to closed (255).
+    """Set the fingers_actuator ctrl to 60% closed (191.25).
 
     The Robotiq 2F-85 uses a single tendon-based actuator:
     ctrl=0 → open, ctrl=255 → closed (driver joints at 0.8 rad).
@@ -381,6 +372,20 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Observations ---
     actor_terms = {
+        # Peg start→hole top, peg end→hole bottom (6D)
+        "peg_to_hole": ObservationTermCfg(
+            func=peg_to_hole_sites_distance,
+            params={
+                "peg_entity": "peg",
+                "hole_entity": "hole",
+                "peg_site_names": ("cylinder_start", "cylinder_end"),
+                "hole_site_names": ("hole_top", "hole_bottom"),
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
+    }
+
+    critic_terms = {
         "joint_vel": ObservationTermCfg(
             func=mdp.joint_vel_rel,
             params={
@@ -440,14 +445,12 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "actions": ObservationTermCfg(func=mdp.last_action),
     }
 
-    critic_terms = {**actor_terms}
-
     observations = {
         "actor": ObservationGroupCfg(actor_terms, enable_corruption=True),
         "critic": ObservationGroupCfg(critic_terms, enable_corruption=False),
     }
 
-    # --- Actions: IK only (no gripper action) ---
+    # --- Actions: Position-only IK (no rotation control, no gripper action) ---
     actions: dict[str, ActionTermCfg] = {
         "ik_pose": HomeRelativeIKActionCfg(
             entity_name="robot",
@@ -460,11 +463,12 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             damping=0.05,
             max_dq=0.5,
             position_weight=1.0,
-            orientation_weight=1.0,
+            orientation_weight=0.0,  # No orientation control
             joint_limit_weight=0.1,
             posture_weight=0.02,
-            pos_scale=0.1,
-            ori_scale=0.1,
+            pos_scale=1.0,  # 1:1 action to position mapping (meters)
+            ori_scale=0.0,  # Orientation actions ignored (3D action space)
+            max_pos_delta=0.5,  # Clip action delta to 0.5m between steps
         ),
     }
 
@@ -498,7 +502,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 ),
             },
         ),
-        # Set fingers_actuator ctrl to 255 (closed) so gripper stays shut
+        # Set fingers_actuator ctrl to 60% closed (191.25) so gripper stays shut
         "reset_gripper_ctrl": EventTermCfg(
             func=reset_gripper_ctrl_closed,
             mode="reset",
@@ -506,7 +510,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg(
                     "robot", actuator_names=("fingers_actuator",)
                 ),
-                "closed_ctrl": 255.0,
+                "closed_ctrl": 191.25,
             },
         ),
         # Position hole (mocap) on ground
@@ -593,7 +597,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "action_rate_l2": RewardTermCfg(
             func=mdp.action_rate_l2,
-            weight=-0.01,
+            weight=-0.01,  # Will be increased via curriculum
         ),
         "joint_pos_limits": RewardTermCfg(
             func=mdp.joint_pos_limits,
@@ -604,7 +608,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "joint_vel_hinge": RewardTermCfg(
             func=manipulation_mdp.joint_velocity_hinge_penalty,
-            weight=-0.01,
+            weight=-0.01,  # Will be increased via curriculum
             params={
                 "max_vel": 0.5,
                 "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
@@ -640,7 +644,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hole_entity": "hole",
                 "peg_site_name": "cylinder_end",
                 "home_pos": (-0.024850, -0.482624, 0.174564),
-                "workspace_half": (0.12, 0.12, 0.12),
+                "workspace_half": (0.12, 0.12, 0.12),  # 12cm workspace
                 "hole_half": (0.015, 0.015, 0.06),
             },
         ),
@@ -661,14 +665,27 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Curriculum ---
     curriculum = {
+        "action_rate_l2_weight": CurriculumTermCfg(
+            func=manipulation_mdp.reward_weight,
+            params={
+                "reward_name": "action_rate_l2",
+                "weight_stages": [
+                    {"step": 0, "weight": -0.01},
+                    {"step": 2400, "weight": -0.04},
+                    {"step": 4800, "weight": -0.07},
+                    {"step": 7200, "weight": -0.10},
+                ],
+            },
+        ),
         "joint_vel_hinge_weight": CurriculumTermCfg(
             func=manipulation_mdp.reward_weight,
             params={
                 "reward_name": "joint_vel_hinge",
                 "weight_stages": [
                     {"step": 0, "weight": -0.01},
-                    {"step": 500 * 24, "weight": -0.1},
-                    {"step": 1000 * 24, "weight": -1.0},
+                    {"step": 2400, "weight": -0.04},
+                    {"step": 4800, "weight": -0.07},
+                    {"step": 7200, "weight": -0.10},
                 ],
             },
         ),
@@ -706,14 +723,14 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             nconmax=55,
             njmax=600,
             mujoco=MujocoCfg(
-                timestep=0.005,
+                timestep=0.01,  # 100 Hz simulation/IK rate
                 iterations=10,
                 ls_iterations=20,
                 impratio=10,
                 cone="elliptic",
             ),
         ),
-        decimation=4,
+        decimation=10,  # 10 Hz policy rate (100/10)
         episode_length_s=10.0,
     )
 

@@ -11,10 +11,10 @@
       <geom type="mesh" group="3" contype="1" conaffinity="1"/>
     </default>
     <default class="large_actuator">
-      <position kp="200" kv="50" forcerange="-32 32"/>
+      <position kp="2000" kv="50" forcerange="-32 32"/>
     </default>
     <default class="small_actuator">
-      <position kp="100" kv="30" forcerange="-9 9"/>
+      <position kp="1000" kv="30" forcerange="-9 9"/>
     </default>
     <!-- Arm joint classes -->
     <default class="arm_joint">

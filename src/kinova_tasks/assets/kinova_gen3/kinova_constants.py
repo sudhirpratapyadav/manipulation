@@ -114,15 +114,15 @@ INIT_STATE_PEGINHOLE = EntityCfg.InitialStateCfg(
         "joint_5": 0.0,               # 0°
         "joint_6": 1.0471975512,      # 60°
         "joint_7": -1.5707963268,     # -90°
-        # Gripper joints - 80% closed (consistent 4-bar linkage state)
-        "right_driver_joint": 0.671,
+        # Gripper joints - 60% closed (consistent 4-bar linkage state)
+        "right_driver_joint": 0.503,
         "right_coupler_joint": 0.001,
-        "right_spring_link_joint": 0.673,
-        "right_follower_joint": -0.646,
-        "left_driver_joint": 0.671,
+        "right_spring_link_joint": 0.505,
+        "right_follower_joint": -0.485,
+        "left_driver_joint": 0.503,
         "left_coupler_joint": 0.001,
-        "left_spring_link_joint": 0.673,
-        "left_follower_joint": -0.646,
+        "left_spring_link_joint": 0.505,
+        "left_follower_joint": -0.485,
     },
     joint_vel={".*": 0.0},
 )
