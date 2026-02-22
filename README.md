@@ -202,4 +202,4 @@ If you use this work in your research, please cite:
 
 
 
-nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=0 uv run train Mjlab-Peg-In-Hole-Kinova --env.scene.num-envs 4096 --agent.max-iterations 40_000   --agent.wandb-project mjlab-kinova-tasks --agent.experiment-name peg_in_hole --enable-nan-guard True > mjlab_train_peg_in_hole.log 2>&1 &
+nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=0 uv run train Mjlab-Peg-In-Hole-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks --agent.experiment-name peg_in_hole --enable-nan-guard True > mjlab_train_peg_in_hole.log 2>&1 &

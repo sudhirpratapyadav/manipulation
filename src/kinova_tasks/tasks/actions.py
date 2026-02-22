@@ -81,19 +81,19 @@ class HomeRelativeIKAction(DifferentialIKAction):
         return 6
 
     def process_actions(self, actions: torch.Tensor) -> None:
-        # DEBUG: Print step counter
-        if not hasattr(self, '_step_counter'):
-            self._step_counter = 0
-        self._step_counter += 1
-        print(f"[ACTION CLIP DEBUG] step={self._step_counter}")
-        print(f"  actions[0]={actions[0, :3].tolist()}")
-        print(f"  prev_desired[0]={self._prev_desired_pos[0].tolist()}")
-        print(f"  home[0]={self._home_pos[0].tolist()}")
+        # # DEBUG: Print step counter
+        # if not hasattr(self, '_step_counter'):
+        #     self._step_counter = 0
+        # self._step_counter += 1
+        # print(f"[ACTION CLIP DEBUG] step={self._step_counter}")
+        # print(f"  actions[0]={actions[0, :3].tolist()}")
+        # print(f"  prev_desired[0]={self._prev_desired_pos[0].tolist()}")
+        # print(f"  home[0]={self._home_pos[0].tolist()}")
 
-        # DEBUG: Check input actions
-        if torch.isnan(actions).any():
-            nan_envs = torch.where(torch.isnan(actions).any(dim=1))[0][:3]
-            print(f"[ACTION CLIP DEBUG] INPUT actions has NaN in envs: {nan_envs.tolist()}")
+        # # DEBUG: Check input actions
+        # if torch.isnan(actions).any():
+        #     nan_envs = torch.where(torch.isnan(actions).any(dim=1))[0][:3]
+        #     print(f"[ACTION CLIP DEBUG] INPUT actions has NaN in envs: {nan_envs.tolist()}")
 
         self._raw_actions[:] = actions
 
@@ -106,30 +106,30 @@ class HomeRelativeIKAction(DifferentialIKAction):
             self._home_pos, self._home_quat, delta
         )
 
-        # DEBUG: Check home position
-        if torch.isnan(self._home_pos).any():
-            nan_envs = torch.where(torch.isnan(self._home_pos).any(dim=1))[0][:3]
-            print(f"[ACTION CLIP DEBUG] home_pos has NaN in envs: {nan_envs.tolist()}")
+        # # DEBUG: Check home position
+        # if torch.isnan(self._home_pos).any():
+        #     nan_envs = torch.where(torch.isnan(self._home_pos).any(dim=1))[0][:3]
+        #     print(f"[ACTION CLIP DEBUG] home_pos has NaN in envs: {nan_envs.tolist()}")
 
-        if torch.isnan(target_pos).any():
-            nan_envs = torch.where(torch.isnan(target_pos).any(dim=1))[0][:3]
-            print(f"[ACTION CLIP DEBUG] target_pos has NaN in envs: {nan_envs.tolist()}")
-            for env_id in nan_envs:
-                print(f"  env {env_id}: target={target_pos[env_id].tolist()}, home={self._home_pos[env_id].tolist()}")
+        # if torch.isnan(target_pos).any():
+        #     nan_envs = torch.where(torch.isnan(target_pos).any(dim=1))[0][:3]
+        #     print(f"[ACTION CLIP DEBUG] target_pos has NaN in envs: {nan_envs.tolist()}")
+        #     for env_id in nan_envs:
+        #         print(f"  env {env_id}: target={target_pos[env_id].tolist()}, home={self._home_pos[env_id].tolist()}")
 
         # Compute delta from PREVIOUS action target to new target
         delta_from_prev = target_pos - self._prev_desired_pos
 
-        # DEBUG: Check delta
-        if torch.isnan(delta_from_prev).any():
-            nan_envs = torch.where(torch.isnan(delta_from_prev).any(dim=1))[0][:3]
-            print(f"[ACTION CLIP DEBUG] delta_from_prev has NaN in envs: {nan_envs.tolist()}")
+        # # DEBUG: Check delta
+        # if torch.isnan(delta_from_prev).any():
+        #     nan_envs = torch.where(torch.isnan(delta_from_prev).any(dim=1))[0][:3]
+        #     print(f"[ACTION CLIP DEBUG] delta_from_prev has NaN in envs: {nan_envs.tolist()}")
 
-        print(f"  target[0]={target_pos[0].tolist()}")
-        print(f"  delta_from_prev[0]={delta_from_prev[0].tolist()}")
-        # Print current EE position
-        ee_pos, ee_quat = self._get_frame_pose()
-        print(f"  current_ee[0]={ee_pos[0].tolist()}")
+        # print(f"  target[0]={target_pos[0].tolist()}")
+        # print(f"  delta_from_prev[0]={delta_from_prev[0].tolist()}")
+        # # Print current EE position
+        # ee_pos, ee_quat = self._get_frame_pose()
+        # print(f"  current_ee[0]={ee_pos[0].tolist()}")
 
         # Clip delta to be within max_pos_delta box
         delta_clipped = torch.clamp(
@@ -138,17 +138,17 @@ class HomeRelativeIKAction(DifferentialIKAction):
             max=self.cfg.max_pos_delta
         )
 
-        print(f"  delta_clipped[0]={delta_clipped[0].tolist()}")
+        # print(f"  delta_clipped[0]={delta_clipped[0].tolist()}")
 
         # Apply clipped target: prev_desired_pos + clipped_delta
         clipped_target_pos = self._prev_desired_pos + delta_clipped
 
-        print(f"  clipped_target[0]={clipped_target_pos[0].tolist()}")
+        # print(f"  clipped_target[0]={clipped_target_pos[0].tolist()}")
 
-        # DEBUG: Check final output
-        if torch.isnan(clipped_target_pos).any():
-            nan_envs = torch.where(torch.isnan(clipped_target_pos).any(dim=1))[0][:3]
-            print(f"[ACTION CLIP DEBUG] clipped_target_pos has NaN in envs: {nan_envs.tolist()}")
+        # # DEBUG: Check final output
+        # if torch.isnan(clipped_target_pos).any():
+        #     nan_envs = torch.where(torch.isnan(clipped_target_pos).any(dim=1))[0][:3]
+        #     print(f"[ACTION CLIP DEBUG] clipped_target_pos has NaN in envs: {nan_envs.tolist()}")
 
         # Store for next iteration
         self._prev_desired_pos[:] = clipped_target_pos

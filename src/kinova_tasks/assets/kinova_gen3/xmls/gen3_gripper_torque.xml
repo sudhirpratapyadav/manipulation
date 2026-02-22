@@ -1,4 +1,4 @@
-<mujoco model="gen3_gripper_position">
+<mujoco model="gen3_gripper_torque">
   <compiler angle="radian" meshdir="assets"/>
 
   <option integrator="implicitfast"/>
@@ -9,12 +9,6 @@
     </default>
     <default class="collision">
       <geom type="mesh" group="3" contype="1" conaffinity="1"/>
-    </default>
-    <default class="large_actuator">
-      <position kp="2000" kv="50" forcerange="-32 32"/>
-    </default>
-    <default class="small_actuator">
-      <position kp="1000" kv="30" forcerange="-9 9"/>
     </default>
     <!-- Arm joint classes -->
     <default class="arm_joint">
@@ -242,15 +236,6 @@
   </worldbody>
 
   <contact>
-    <!-- Consecutive arm link pairs -->
-    <exclude body1="base_link" body2="shoulder_link"/>
-    <exclude body1="shoulder_link" body2="half_arm_1_link"/>
-    <exclude body1="half_arm_1_link" body2="half_arm_2_link"/>
-    <exclude body1="half_arm_2_link" body2="forearm_link"/>
-    <exclude body1="forearm_link" body2="spherical_wrist_1_link"/>
-    <exclude body1="spherical_wrist_1_link" body2="spherical_wrist_2_link"/>
-    <exclude body1="spherical_wrist_2_link" body2="bracelet_link"/>
-    <!-- Gripper linkage pairs -->
     <exclude body1="base" body2="left_driver"/>
     <exclude body1="base" body2="right_driver"/>
     <exclude body1="base" body2="left_spring_link"/>
@@ -273,17 +258,15 @@
   </equality>
 
   <actuator>
-    <!-- Arm position actuators -->
-    <position class="large_actuator" name="joint_1" joint="joint_1"/>
-    <position class="large_actuator" name="joint_2" joint="joint_2" ctrlrange="-2.2497294058206907 2.2497294058206907"/>
-    <position class="large_actuator" name="joint_3" joint="joint_3"/>
-    <position class="large_actuator" name="joint_4" joint="joint_4" ctrlrange="-2.5795966344476193 2.5795966344476193"/>
-    <position class="small_actuator" name="joint_5" joint="joint_5"/>
-    <position class="small_actuator" name="joint_6" joint="joint_6" ctrlrange="-2.0996310901491784 2.0996310901491784"/>
-    <position class="small_actuator" name="joint_7" joint="joint_7"/>
-    <!-- Gripper: single tendon-based actuator (matches mujoco_menagerie/robotiq_2f85).
-         ctrl=0 → open (driver joints at 0), ctrl=255 → closed (driver joints at 0.8).
-         gainprm[0] = 0.8 * 100 / 255 ≈ 0.3137255, kp=100 via biasprm. -->
+    <!-- Arm motor actuators (torque control) -->
+    <motor name="joint_1" joint="joint_1" forcerange="-39 39"/>
+    <motor name="joint_2" joint="joint_2" forcerange="-39 39"/>
+    <motor name="joint_3" joint="joint_3" forcerange="-39 39"/>
+    <motor name="joint_4" joint="joint_4" forcerange="-39 39"/>
+    <motor name="joint_5" joint="joint_5" forcerange="-9 9"/>
+    <motor name="joint_6" joint="joint_6" forcerange="-9 9"/>
+    <motor name="joint_7" joint="joint_7" forcerange="-9 9"/>
+    <!-- Gripper: single tendon-based actuator -->
     <general class="2f85" name="fingers_actuator" tendon="split" forcerange="-5 5" ctrlrange="0 255"
       gainprm="0.3137255 0 0" biasprm="0 -100 -10"/>
   </actuator>

@@ -33,7 +33,7 @@ from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.velocity import mdp
 from mjlab.terrains import TerrainImporterCfg
-from mjlab.utils.lab_api.math import sample_uniform
+from mjlab.utils.lab_api.math import axis_angle_from_quat, quat_apply_inverse, quat_conjugate, quat_mul, sample_uniform
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
@@ -213,6 +213,63 @@ GRIPPER_CLOSED_JOINT_POS = {
 GRIPPER_JOINT_NAMES = tuple(GRIPPER_CLOSED_JOINT_POS.keys())
 
 
+def peg_slip_termination(
+    env: ManagerBasedRlEnv,
+    peg_entity: str = "peg",
+    robot_entity: str = "robot",
+    ee_site_name: str = "pinch_site",
+    pos_threshold: float = 0.02,
+    angle_threshold: float = 0.5,
+) -> torch.Tensor:
+    """Terminate if the peg has slipped too far from its initial pose relative to the EE.
+
+    On the first step of each episode (episode_length_buf == 1), the peg pose
+    relative to the EE (pinch_site frame) is stored as the reference. Each
+    subsequent step, the delta pose is computed:
+      - delta_pos: position difference in EE local frame
+      - delta_angle: axis-angle norm of orientation difference (radians)
+
+    Terminates if ||delta_pos|| > pos_threshold OR ||delta_angle|| > angle_threshold.
+    """
+    peg: Entity = env.scene[peg_entity]
+    robot: Entity = env.scene[robot_entity]
+
+    # Peg pose in world frame
+    peg_pos_w = peg.data.root_link_pos_w   # (N, 3)
+    peg_quat_w = peg.data.root_link_quat_w  # (N, 4)
+
+    # EE site pose in world frame
+    ee_site_id = robot.find_sites(ee_site_name)[0]
+    ee_pos_w = robot.data.site_pos_w[:, ee_site_id].squeeze(1)   # (N, 3)
+    ee_quat_w = robot.data.site_quat_w[:, ee_site_id].squeeze(1)  # (N, 4)
+
+    # Peg position expressed in EE local frame
+    peg_pos_wrt_ee = quat_apply_inverse(ee_quat_w, peg_pos_w - ee_pos_w)  # (N, 3)
+    # Peg orientation relative to EE: q_ee^-1 * q_peg
+    peg_quat_wrt_ee = quat_mul(quat_conjugate(ee_quat_w), peg_quat_w)     # (N, 4)
+
+    # Initialize storage on the very first call
+    if not hasattr(env, "_peg_slip_init_pos"):
+        env._peg_slip_init_pos = peg_pos_wrt_ee.clone()
+        env._peg_slip_init_quat = peg_quat_wrt_ee.clone()
+
+    # Update reference at the start of each episode (first physics step)
+    just_reset = env.episode_length_buf == 1
+    if just_reset.any():
+        env._peg_slip_init_pos[just_reset] = peg_pos_wrt_ee[just_reset].clone()
+        env._peg_slip_init_quat[just_reset] = peg_quat_wrt_ee[just_reset].clone()
+
+    # Delta position norm (in EE frame)
+    delta_pos = peg_pos_wrt_ee - env._peg_slip_init_pos
+    pos_norm = torch.linalg.norm(delta_pos, dim=-1)  # (N,)
+
+    # Delta orientation: axis-angle from q_init^-1 * q_current → norm = angle magnitude
+    delta_quat = quat_mul(quat_conjugate(env._peg_slip_init_quat), peg_quat_wrt_ee)
+    angle_norm = torch.linalg.norm(axis_angle_from_quat(delta_quat), dim=-1)  # (N,)
+
+    return (pos_norm > pos_threshold) | (angle_norm > angle_threshold)
+
+
 def peg_out_of_bounds(
     env: ManagerBasedRlEnv,
     peg_entity: str = "peg",
@@ -383,6 +440,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
+        "actions": ObservationTermCfg(func=mdp.last_action),
     }
 
     critic_terms = {
@@ -468,7 +526,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             posture_weight=0.02,
             pos_scale=1.0,  # 1:1 action to position mapping (meters)
             ori_scale=0.0,  # Orientation actions ignored (3D action space)
-            max_pos_delta=0.5,  # Clip action delta to 0.5m between steps
+            max_pos_delta=0.005,  # Clip action delta to 0.5m between steps
         ),
     }
 
@@ -530,7 +588,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "peg_entity_name": "peg",
-                "pinch_pos_local": (-0.024850, -0.482624, 0.174564),
+                "pinch_pos_local": (-0.024850, -0.482624, 0.164564),
             },
         ),
         # Fingertip friction randomization (Robotiq 2F-85 pads)
@@ -637,6 +695,16 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=manipulation_mdp.illegal_contact,
             params={"sensor_name": "ee_ground_collision"},
         ),
+        "peg_slip": TerminationTermCfg(
+            func=peg_slip_termination,
+            params={
+                "peg_entity": "peg",
+                "robot_entity": "robot",
+                "ee_site_name": "pinch_site",
+                "pos_threshold": 0.01,    # 1 cm
+                "angle_threshold": 0.3491,  # 20 deg
+            },
+        ),
         "peg_out_of_bounds": TerminationTermCfg(
             func=peg_out_of_bounds,
             params={
@@ -723,14 +791,14 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             nconmax=55,
             njmax=600,
             mujoco=MujocoCfg(
-                timestep=0.01,  # 100 Hz simulation/IK rate
+                timestep=0.002,  # 500 Hz simulation/IK rate
                 iterations=10,
                 ls_iterations=20,
                 impratio=10,
                 cone="elliptic",
             ),
         ),
-        decimation=10,  # 10 Hz policy rate (100/10)
+        decimation=10,  # 50 Hz policy rate (500/10)
         episode_length_s=10.0,
     )
 
