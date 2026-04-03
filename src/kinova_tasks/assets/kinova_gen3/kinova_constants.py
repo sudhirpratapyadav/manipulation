@@ -3,7 +3,7 @@
 from pathlib import Path
 import mujoco
 
-from mjlab.actuator import XmlPositionActuatorCfg
+from mjlab.actuator import XmlMotorActuatorCfg, XmlPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
 
@@ -13,6 +13,7 @@ from mjlab.utils.os import update_assets
 
 _HERE = Path(__file__).parent
 KINOVA_GEN3_GRIPPER_XML: Path = _HERE / "xmls" / "gen3_gripper.xml"
+KINOVA_GEN3_NO_GRIPPER_XML: Path = _HERE / "xmls" / "gen3_no_gripper_torque.xml"
 
 
 def get_assets(meshdir: str) -> dict[str, bytes]:
@@ -187,3 +188,53 @@ def get_kinova_robot_cfg_peginhole() -> EntityCfg:
 
 # Action scale for delta control
 KINOVA_ACTION_SCALE = 0.04
+
+##
+# No-gripper arm (native torque actuators, for OSC control).
+##
+
+# Initial state for the arm-only (no gripper) configuration
+INIT_STATE_NO_GRIPPER = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.0),
+    joint_pos={
+        "joint_1": 0.0,
+        "joint_2": 0.3490658504,   # 20°
+        "joint_3": 0.0,
+        "joint_4": 1.7453292519,   # 100°
+        "joint_5": 0.0,
+        "joint_6": -0.5235987756,  # -30°
+        "joint_7": -1.5707963268,  # -90°
+    },
+    joint_vel={".*": 0.0},
+)
+
+
+def get_no_gripper_spec() -> mujoco.MjSpec:
+    """Load Kinova Gen3 arm without gripper using native torque actuators."""
+    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_NO_GRIPPER_XML))
+    spec.assets = get_assets(spec.meshdir)
+    return spec
+
+
+# XmlMotorActuatorCfg keeps the native <motor> torque actuators from the XML
+KINOVA_NO_GRIPPER_ACTUATORS = XmlMotorActuatorCfg(
+    target_names_expr=("joint_.*",),
+)
+
+KINOVA_NO_GRIPPER_ARTICULATION = EntityArticulationInfoCfg(
+    actuators=(KINOVA_NO_GRIPPER_ACTUATORS,),
+    soft_joint_pos_limit_factor=0.9,
+)
+
+
+def get_kinova_no_gripper_robot_cfg() -> EntityCfg:
+    """Get Kinova Gen3 arm-only config with native torque actuators (for OSC control).
+
+    Returns a fresh EntityCfg each time to avoid mutation issues.
+    """
+    return EntityCfg(
+        init_state=INIT_STATE_NO_GRIPPER,
+        collisions=(),
+        spec_fn=get_no_gripper_spec,
+        articulation=KINOVA_NO_GRIPPER_ARTICULATION,
+    )

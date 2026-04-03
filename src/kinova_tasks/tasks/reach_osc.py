@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import mujoco
 import torch
 
-from kinova_tasks.assets.kinova_gen3.kinova_constants import get_assets
+from kinova_tasks.assets.kinova_gen3.kinova_constants import get_kinova_no_gripper_robot_cfg
 from kinova_tasks.tasks.base_rl_cfg import kinova_ppo_runner_cfg
 from kinova_tasks.tasks.actions.osc import OperationalSpaceActionCfg
-from mjlab.actuator import XmlMotorActuatorCfg
-from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
+from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
@@ -40,54 +39,12 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Robot asset — no-gripper arm with native torque actuators
-# ---------------------------------------------------------------------------
-
-_NO_GRIPPER_XML = (
-    Path(__file__).parent.parent / "assets/kinova_gen3/xmls/gen3_no_gripper_torque.xml"
-)
-
-_INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.0),
-    joint_pos={
-        "joint_1": 0.0,
-        "joint_2": 0.3490658504,   # 20°
-        "joint_3": 0.0,
-        "joint_4": 1.7453292519,   # 100°
-        "joint_5": 0.0,
-        "joint_6": -0.5235987756,  # -30°
-        "joint_7": -1.5707963268,  # -90°
-    },
-    joint_vel={".*": 0.0},
-)
-
-
-def _get_no_gripper_spec() -> mujoco.MjSpec:
-    spec = mujoco.MjSpec.from_file(str(_NO_GRIPPER_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec  # keep native <motor> actuators
-
-
-def _get_robot_cfg() -> EntityCfg:
-    return EntityCfg(
-        init_state=_INIT_STATE,
-        collisions=(),
-        spec_fn=_get_no_gripper_spec,
-        articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
-            soft_joint_pos_limit_factor=0.9,
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
 # Home EE pose (pinch_site FK at default joint config)
 # ---------------------------------------------------------------------------
 
 _HOME_POS = (0.733607, -0.024850, 0.523015)
 _HOME_QUAT = (0.5, 0.5, 0.5, 0.5)  # w, x, y, z
 
-# Distinct axis colors for target frame: slightly desaturated RGB
 _TARGET_FRAME_COLORS = (
     (1.0, 0.4, 0.4),  # X — coral red
     (0.4, 1.0, 0.4),  # Y — light green
@@ -96,8 +53,119 @@ _TARGET_FRAME_COLORS = (
 
 
 # ---------------------------------------------------------------------------
+# Reach pose command (CommandTerm / CommandTermCfg)
+# ---------------------------------------------------------------------------
+
+
+class ReachPoseCommand(CommandTerm):
+    """Samples and maintains a 6D target pose for the EE to reach.
+
+    Target is expressed in local/physics frame (same as ``site_pos_w``).
+    Each env's MuJoCo simulation starts at its own local origin — env_origins
+    are a visualisation-only grid offset and must NOT be mixed into physics
+    coordinates.
+    """
+
+    cfg: ReachPoseCommandCfg
+
+    def __init__(self, cfg: ReachPoseCommandCfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+
+        robot: Entity = env.scene[cfg.entity_name]
+        self._site_ids = robot.find_sites(cfg.site_name)[0]
+
+        self.target_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.target_quat = torch.zeros(self.num_envs, 4, device=self.device)
+        self.target_quat[:, 0] = 1.0  # identity quaternion
+
+        self.metrics["pos_error"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["ori_error"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["pos_success"] = torch.zeros(self.num_envs, device=self.device)
+
+    @property
+    def command(self) -> torch.Tensor:
+        """Concatenated [target_pos(3), target_quat(4)] in world frame, shape (B, 7)."""
+        return torch.cat([self.target_pos, self.target_quat], dim=-1)
+
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        n = len(env_ids)
+        r = self.cfg.pos_range
+        ori_r = self.cfg.ori_range
+
+        home = torch.tensor(_HOME_POS, device=self.device)
+        target_pos_local = sample_uniform(
+            home + r[0], home + r[1], (n, 3), device=self.device
+        )
+        self.target_pos[env_ids] = target_pos_local
+
+        euler = sample_uniform(
+            torch.tensor([ori_r[0]] * 3, device=self.device),
+            torch.tensor([ori_r[1]] * 3, device=self.device),
+            (n, 3),
+            device=self.device,
+        )
+        delta_quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
+        home_quat = torch.tensor(_HOME_QUAT, device=self.device).unsqueeze(0).expand(n, -1)
+        self.target_quat[env_ids] = quat_mul(home_quat, delta_quat)
+
+    def _update_metrics(self) -> None:
+        robot: Entity = self._env.scene[self.cfg.entity_name]
+        ee_pos = robot.data.site_pos_w[:, self._site_ids].squeeze(1)
+        ee_quat = robot.data.site_quat_w[:, self._site_ids].squeeze(1)
+        pos_err, rot_err = compute_pose_error(
+            ee_pos, ee_quat, self.target_pos, self.target_quat
+        )
+        pos_norm = torch.norm(pos_err, dim=-1)
+        ori_norm = torch.norm(rot_err, dim=-1)
+        self.metrics["pos_error"] = pos_norm
+        self.metrics["ori_error"] = ori_norm
+        self.metrics["pos_success"] = (pos_norm < self.cfg.pos_threshold).float()
+
+    def _update_command(self) -> None:
+        pass  # Target is static between resamples.
+
+    def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+        env_indices = visualizer.get_env_indices(self._env.num_envs)
+        if not env_indices:
+            return
+        for i in env_indices:
+            tgt_pos = self.target_pos[i]
+            tgt_quat = self.target_quat[i]
+            tgt_rotm = matrix_from_quat(tgt_quat.unsqueeze(0)).squeeze(0).cpu().numpy()
+            visualizer.add_frame(
+                position=tgt_pos.cpu().numpy(),
+                rotation_matrix=tgt_rotm,
+                scale=0.12,
+                label=f"target_frame_{i}",
+                axis_colors=_TARGET_FRAME_COLORS,
+            )
+
+
+@dataclass(kw_only=True)
+class ReachPoseCommandCfg(CommandTermCfg):
+    """Configuration for the reach-pose command term."""
+
+    entity_name: str = "robot"
+    site_name: str = "pinch_site"
+    pos_range: tuple[float, float] = (-0.15, 0.15)
+    ori_range: tuple[float, float] = (-0.3, 0.3)
+    pos_threshold: float = 0.02
+
+    def build(self, env: ManagerBasedRlEnv) -> ReachPoseCommand:
+        return ReachPoseCommand(self, env)
+
+
+# ---------------------------------------------------------------------------
 # Custom MDP functions
 # ---------------------------------------------------------------------------
+
+
+def _get_reach_command(env: ManagerBasedRlEnv, command_name: str) -> ReachPoseCommand:
+    term = env.command_manager.get_term(command_name)
+    assert isinstance(term, ReachPoseCommand), (
+        f"Expected ReachPoseCommand for '{command_name}', got {type(term)}"
+    )
+    return term
 
 
 def joint_pos(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tensor:
@@ -112,45 +180,9 @@ def joint_vel(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tenso
     return robot.data.joint_vel
 
 
-def reset_reach_target(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
-    pos_range: tuple[float, float] = (-0.15, 0.15),   # ±15 cm from home
-    ori_range: tuple[float, float] = (-0.3, 0.3),     # ±0.3 rad (~17°) per axis
-) -> None:
-    """Sample a random 6D target pose and store it on the env."""
-    if env_ids is None:
-        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
-    n = len(env_ids)
-
-    home = torch.tensor(_HOME_POS, device=env.device)
-    r = pos_range
-    target_pos_local = sample_uniform(
-        home + r[0], home + r[1], (n, 3), device=env.device
-    )
-    target_pos = target_pos_local + env.scene.env_origins[env_ids]
-
-    euler = sample_uniform(
-        torch.tensor([ori_range[0]] * 3, device=env.device),
-        torch.tensor([ori_range[1]] * 3, device=env.device),
-        (n, 3),
-        device=env.device,
-    )
-    delta_quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
-    home_quat = torch.tensor(_HOME_QUAT, device=env.device).unsqueeze(0).expand(n, -1)
-    target_quat = quat_mul(home_quat, delta_quat)
-
-    if not hasattr(env, "_reach_target_pos"):
-        env._reach_target_pos = torch.zeros(env.num_envs, 3, device=env.device)
-        env._reach_target_quat = torch.zeros(env.num_envs, 4, device=env.device)
-        env._reach_target_quat[:, 0] = 1.0
-
-    env._reach_target_pos[env_ids] = target_pos
-    env._reach_target_quat[env_ids] = target_quat
-
-
 def ee_to_target(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
 ) -> torch.Tensor:
@@ -159,29 +191,33 @@ def ee_to_target(
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
     ee_quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
-
-    target_pos = getattr(env, "_reach_target_pos", torch.zeros_like(ee_pos))
-    target_quat = getattr(env, "_reach_target_quat", ee_quat.clone())
-
-    pos_err, rot_err = compute_pose_error(ee_pos, ee_quat, target_pos, target_quat)
+    cmd = _get_reach_command(env, command_name)
+    pos_err, rot_err = compute_pose_error(ee_pos, ee_quat, cmd.target_pos, cmd.target_quat)
     return torch.cat([pos_err, rot_err], dim=-1)
 
 
 def ee_pos_vec(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
 ) -> torch.Tensor:
-    """3D position error vector from EE to target."""
+    """3D position error vector from EE to target.
+
+    Both target and EE are in local/physics frame (no env_origin offset),
+    so their difference is a consistent error vector matching what the
+    real robot would observe.
+    """
     robot: Entity = env.scene[entity_name]
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
-    target_pos = getattr(env, "_reach_target_pos", torch.zeros_like(ee_pos))
-    return target_pos - ee_pos
+    cmd = _get_reach_command(env, command_name)
+    return cmd.target_pos - ee_pos
 
 
 def ee_pos_error(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
 ) -> torch.Tensor:
@@ -189,12 +225,13 @@ def ee_pos_error(
     robot: Entity = env.scene[entity_name]
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
-    target_pos = getattr(env, "_reach_target_pos", ee_pos.clone())
-    return torch.norm(ee_pos - target_pos, dim=-1)
+    cmd = _get_reach_command(env, command_name)
+    return torch.norm(ee_pos - cmd.target_pos, dim=-1)
 
 
 def ee_ori_error(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
 ) -> torch.Tensor:
@@ -203,28 +240,29 @@ def ee_ori_error(
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
     ee_quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
-    target_pos = getattr(env, "_reach_target_pos", ee_pos.clone())
-    target_quat = getattr(env, "_reach_target_quat", ee_quat.clone())
-    _, rot_err = compute_pose_error(ee_pos, ee_quat, target_pos, target_quat)
+    cmd = _get_reach_command(env, command_name)
+    _, rot_err = compute_pose_error(ee_pos, ee_quat, cmd.target_pos, cmd.target_quat)
     return torch.norm(rot_err, dim=-1)
 
 
 def pos_success(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
     pos_threshold: float = 0.02,
 ) -> torch.Tensor:
-    """Binary: EE within pos_threshold (m) of target position (matches reward signal)."""
+    """Binary: EE within pos_threshold (m) of target position."""
     robot: Entity = env.scene[entity_name]
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
-    target_pos = getattr(env, "_reach_target_pos", ee_pos.clone())
-    return (torch.norm(ee_pos - target_pos, dim=-1) < pos_threshold).float()
+    cmd = _get_reach_command(env, command_name)
+    return (torch.norm(ee_pos - cmd.target_pos, dim=-1) < pos_threshold).float()
 
 
 def pose_success(
     env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
     entity_name: str = "robot",
     site_name: str = "pinch_site",
     pos_threshold: float = 0.02,
@@ -235,26 +273,28 @@ def pose_success(
     site_ids = robot.find_sites(site_name)[0]
     ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
     ee_quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
-    target_pos = getattr(env, "_reach_target_pos", ee_pos.clone())
-    target_quat = getattr(env, "_reach_target_quat", ee_quat.clone())
-    pos_err, rot_err = compute_pose_error(ee_pos, ee_quat, target_pos, target_quat)
+    cmd = _get_reach_command(env, command_name)
+    pos_err, rot_err = compute_pose_error(ee_pos, ee_quat, cmd.target_pos, cmd.target_quat)
     pos_ok = torch.norm(pos_err, dim=-1) < pos_threshold
     ori_ok = torch.norm(rot_err, dim=-1) < ori_threshold
     return (pos_ok & ori_ok).float()
 
 
 # ---------------------------------------------------------------------------
-# Class-based reward term — computes reward + draws EE/target frames in viser
+# Class-based reward term — computes reward + draws EE/action frames in viser
 # ---------------------------------------------------------------------------
 
 
 class reach_reward:
-    """Gaussian reach reward with debug_vis drawing EE and target frames."""
+    """Gaussian reach reward. Draws EE frame and action arrow via debug_vis.
+    Target frame is drawn by ReachPoseCommand._debug_vis_impl.
+    """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
         self._env = env
         self._entity_name: str = cfg.params.get("entity_name", "robot")
         self._site_name: str = cfg.params.get("site_name", "pinch_site")
+        self._command_name: str = cfg.params.get("command_name", "reach_pose")
         self._debug_vis_enabled: bool = True
         self._delta_pos_scale: float = env.action_manager._terms["osc_pose"].cfg.delta_pos_scale
 
@@ -264,12 +304,14 @@ class reach_reward:
         std: float = 0.1,
         entity_name: str = "robot",
         site_name: str = "pinch_site",
+        command_name: str = "reach_pose",
     ) -> torch.Tensor:
         robot: Entity = env.scene[entity_name]
         site_ids = robot.find_sites(site_name)[0]
         ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
-        target_pos = getattr(env, "_reach_target_pos", ee_pos.clone())
-        dist_sq = torch.sum(torch.square(ee_pos - target_pos), dim=-1)
+        cmd = _get_reach_command(env, command_name)
+        # print(f"cmd:{cmd.target_pos}")
+        dist_sq = torch.sum(torch.square(ee_pos - cmd.target_pos), dim=-1)
         return torch.exp(-dist_sq / (std ** 2))
 
     def reset(self, env_ids: torch.Tensor) -> None:
@@ -285,12 +327,9 @@ class reach_reward:
 
         robot: Entity = env.scene[self._entity_name]
         site_ids = robot.find_sites(self._site_name)[0]
-
-        # Last action: shape (num_envs, 6), first 3 dims are delta_ee_pos (unit scale)
         last_action = env.action_manager.action  # (num_envs, 6)
 
         for i in env_indices:
-            # EE frame (default RGB axes)
             ee_pos = robot.data.site_pos_w[i, site_ids].squeeze(0)
             ee_quat = robot.data.site_quat_w[i, site_ids].squeeze(0)
             ee_rotm = matrix_from_quat(ee_quat.unsqueeze(0)).squeeze(0).cpu().numpy()
@@ -300,8 +339,7 @@ class reach_reward:
                 scale=0.12,
                 label=f"ee_frame_{i}",
             )
-
-            # Action arrow: delta_ee_pos scaled by delta_pos_scale
+            # Action arrow: delta_ee_pos scaled to metres
             delta_pos = last_action[i, :3] * self._delta_pos_scale
             arrow_end = (ee_pos + delta_pos).cpu().numpy()
             visualizer.add_arrow(
@@ -310,29 +348,6 @@ class reach_reward:
                 color=(1.0, 0.8, 0.0, 1.0),  # yellow
                 width=0.01,
                 label=f"action_arrow_{i}",
-            )
-
-            # Pose error arrow: EE → target position (cyan)
-            if not hasattr(env, "_reach_target_pos"):
-                continue
-            tgt_pos = env._reach_target_pos[i]
-            visualizer.add_arrow(
-                start=ee_pos.cpu().numpy(),
-                end=tgt_pos.cpu().numpy(),
-                color=(0.0, 1.0, 1.0, 1.0),  # cyan
-                width=0.01,
-                label=f"pos_error_arrow_{i}",
-            )
-
-            # Target frame (desaturated axes to distinguish from EE)
-            tgt_quat = env._reach_target_quat[i]
-            tgt_rotm = matrix_from_quat(tgt_quat.unsqueeze(0)).squeeze(0).cpu().numpy()
-            visualizer.add_frame(
-                position=tgt_pos.cpu().numpy(),
-                rotation_matrix=tgt_rotm,
-                scale=0.12,
-                label=f"target_frame_{i}",
-                axis_colors=_TARGET_FRAME_COLORS,
             )
 
 
@@ -344,18 +359,22 @@ class reach_reward:
 def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Kinova Gen3 reach task with OSC torque control (arm only, no gripper).
 
-    Goal: move pinch_site to a randomised 6D target pose each episode.
-    EE and target frames are visualised in viser via the debug_vis system.
+    Goal: move pinch_site to a randomised 6D target pose. The target is
+    resampled every 3 s (mid-episode) via the command manager, following
+    the standard mjlab pattern.
 
     Actions (6D):
         relative pos + axis-angle delta applied to current EE pose
-    Observations (26D):
-        joint_pos_rel(7) + joint_vel_rel(7) + ee_to_target(6) + last_action(6)
+    Observations (23D):
+        joint_pos(7) + joint_vel(7) + ee_pos_vec(3) + last_action(6)
     """
     actor_terms = {
         "joint_pos": ObservationTermCfg(func=joint_pos),
         "joint_vel": ObservationTermCfg(func=joint_vel),
-        "ee_pos_vec": ObservationTermCfg(func=ee_pos_vec),
+        "ee_pos_vec": ObservationTermCfg(
+            func=ee_pos_vec,
+            params={"command_name": "reach_pose"},
+        ),
         "actions": ObservationTermCfg(func=mdp.last_action),
     }
 
@@ -369,15 +388,25 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             delta_pos_scale=0.03,       # 3 cm per unit action
             delta_ori_scale=0.02,       # ~1.1° per unit action
             position_weight=1.0,
-            orientation_weight=0.0,
+            orientation_weight=0.5,
             kp_pos=50.0,
             kd_pos=10.0,
             kp_ori=50.0,
             kd_ori=10.0,
-            max_torque=[39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0],  # Nm, joints 1-4 / 5-7
-            posture_weight=0.0,         # null-space posture restore
+            max_torque=[39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0],
+            posture_weight=0.0,
             posture_kp=10.0,
             posture_kd=2.0,
+        ),
+    }
+
+    commands = {
+        "reach_pose": ReachPoseCommandCfg(
+            resampling_time_range=(3.0, 3.0),  # resample every 3 s mid-episode
+            debug_vis=True,
+            pos_range=(-0.15, 0.15),
+            ori_range=(-0.3, 0.3),
+            pos_threshold=0.02,
         ),
     }
 
@@ -386,14 +415,10 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=mdp.reset_joints_by_offset,
             mode="reset",
             params={
-                "position_range": (-0.05, 0.05),  # ±0.05 rad per joint
+                "position_range": (-0.05, 0.05),
                 "velocity_range": (0.0, 0.0),
                 "asset_cfg": SceneEntityCfg("robot"),
             },
-        ),
-        "reset_reach_target": EventTermCfg(
-            func=reset_reach_target,
-            mode="reset",
         ),
     }
 
@@ -401,17 +426,13 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "reach": RewardTermCfg(
             func=reach_reward,
             weight=1.0,
-            params={"std": 0.5},        # coarse reward, gradient even when far
+            params={"std": 0.5, "command_name": "reach_pose"},
         ),
         "reach_precise": RewardTermCfg(
             func=reach_reward,
             weight=1.0,
-            params={"std": 0.1},        # fine reward, incentivises getting close
+            params={"std": 0.1, "command_name": "reach_pose"},
         ),
-        # "action_rate_l2": RewardTermCfg(
-        #     func=mdp.action_rate_l2,
-        #     weight=-0.01,               # penalise jerky actions
-        # ),
     }
 
     terminations = {
@@ -420,10 +441,22 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     metrics = {
-        "pos_error": MetricsTermCfg(func=ee_pos_error),
-        "ori_error": MetricsTermCfg(func=ee_ori_error),
-        "pos_success": MetricsTermCfg(func=pos_success),    # matches reward signal
-        "pose_success": MetricsTermCfg(func=pose_success),  # pos + ori within threshold
+        "pos_error": MetricsTermCfg(
+            func=ee_pos_error,
+            params={"command_name": "reach_pose"},
+        ),
+        "ori_error": MetricsTermCfg(
+            func=ee_ori_error,
+            params={"command_name": "reach_pose"},
+        ),
+        "pos_success": MetricsTermCfg(
+            func=pos_success,
+            params={"command_name": "reach_pose"},
+        ),
+        "pose_success": MetricsTermCfg(
+            func=pose_success,
+            params={"command_name": "reach_pose"},
+        ),
     }
 
     cfg = ManagerBasedRlEnvCfg(
@@ -431,14 +464,14 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             terrain=TerrainEntityCfg(terrain_type="plane"),
             num_envs=1,
             env_spacing=1.5,
-            entities={"robot": _get_robot_cfg()},
+            entities={"robot": get_kinova_no_gripper_robot_cfg()},
         ),
         observations={
             "actor": ObservationGroupCfg(actor_terms, enable_corruption=False),
             "critic": ObservationGroupCfg(actor_terms, enable_corruption=False),
         },
         actions=actions,
-        commands={},
+        commands=commands,
         events=events,
         rewards=rewards,
         terminations=terminations,
@@ -459,11 +492,11 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         ),
         decimation=50,                  # policy runs at 10 Hz
-        episode_length_s=3.0,
+        episode_length_s=10.0,
     )
 
     if play:
-        cfg.episode_length_s = int(1e9)
+        cfg.episode_length_s = 10.0
         cfg.observations["actor"].enable_corruption = False
         cfg.observations["critic"].enable_corruption = False
 
