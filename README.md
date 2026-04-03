@@ -200,6 +200,16 @@ If you use this work in your research, please cite:
 }
 ```
 
+uv run play Mjlab-Peg-In-Hole-Kinova --viewer viser --num-envs 4 --agent random
+
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Peg-In-Hole-Kinova --viewer viser --num-envs 4 --checkpoint-file /media/cvlab/EXTDRIVE/sudhir/continual_learning/manipulation/logs/rsl_rl/peg_in_hole/2026-02-27_22-44-00/model_100.pt
+
+nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Peg-In-Hole-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks --agent.experiment-name peg_in_hole --enable-nan-guard True > mjlab_train_peg_in_hole.log 2>&1 &
 
 
-nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=0 uv run train Mjlab-Peg-In-Hole-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks --agent.experiment-name peg_in_hole --enable-nan-guard True > mjlab_train_peg_in_hole.log 2>&1 &
+
+
+CUDA_VISIBLE_DEVICES=1 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc
+
+
+nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc > reach_osc.log 2>&1 &

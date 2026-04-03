@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<mujoco model="target_marker">
+  <worldbody>
+    <body name="target_marker" mocap="true">
+      <!-- Sphere at target position (small) -->
+      <site name="target_pos" type="sphere" size="0.02" pos="0 0 0" rgba="1 0.2 0.2 0.9" group="1"/>
+      <!-- Axes showing target orientation (x=red, y=green, z=blue) -->
+      <site name="target_x" type="cylinder" size="0.005 0.05" pos="0.05 0 0" quat="0.707 0 0.707 0" rgba="1 0 0 0.8" group="1"/>
+      <site name="target_y" type="cylinder" size="0.005 0.05" pos="0 0.05 0" quat="0.707 0.707 0 0" rgba="0 1 0 0.8" group="1"/>
+      <site name="target_z" type="cylinder" size="0.005 0.05" pos="0 0 0.05" quat="1 0 0 0" rgba="0 0 1 0.8" group="1"/>
+    </body>
+  </worldbody>
+</mujoco>

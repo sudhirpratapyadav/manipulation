@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<mujoco model="ee_marker">
+  <worldbody>
+    <body name="ee_marker" mocap="true">
+      <!-- Sphere tracking EE (pinch_site) position -->
+      <site name="ee_pos" type="sphere" size="0.02" pos="0 0 0" rgba="0.2 1 0.2 0.9" group="1"/>
+      <!-- Axes showing EE orientation (x=red, y=green, z=blue) -->
+      <site name="ee_x" type="cylinder" size="0.005 0.05" pos="0.05 0 0" quat="0.707 0 0.707 0" rgba="1 0 0 0.8" group="1"/>
+      <site name="ee_y" type="cylinder" size="0.005 0.05" pos="0 0.05 0" quat="0.707 0.707 0 0" rgba="0 1 0 0.8" group="1"/>
+      <site name="ee_z" type="cylinder" size="0.005 0.05" pos="0 0 0.05" quat="1 0 0 0" rgba="0 0 1 0.8" group="1"/>
+    </body>
+  </worldbody>
+</mujoco>

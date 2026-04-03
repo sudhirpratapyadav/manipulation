@@ -3,27 +3,31 @@
   <worldbody>
     <body name="hole" mocap="true">
       <!-- Base plate of the hole receptacle -->
-      <geom type="box" name="hole_base" size="0.03 0.03 0.003" pos="0 0 -0.003" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.004 1" solimp="0.98 0.999 0.0001 0.5 2"/>
+      <geom type="box" name="hole_base" size="0.03 0.03 0.003" pos="0 0 -0.003" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- Four walls forming a square hole (opening 1.5cm x 1.5cm for 1cm peg) -->
-      <!-- Wall thickness: 0.5cm, Wall height: 5cm -->
+      <!-- Wall thickness: 0.5cm, Wall height: 6.5cm -->
 
       <!-- Front wall (+Y side) -->
-      <geom type="box" name="hole_wall_front" size="0.0125 0.0025 0.025" pos="0 0.01 0.025" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.004 1" solimp="0.98 0.999 0.0001 0.5 2"/>
+      <geom type="box" name="hole_wall_front" size="0.0125 0.0025 0.0325" pos="0 0.01 0.0325" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- Back wall (-Y side) -->
-      <geom type="box" name="hole_wall_back" size="0.0125 0.0025 0.025" pos="0 -0.01 0.025" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.004 1" solimp="0.98 0.999 0.0001 0.5 2"/>
+      <geom type="box" name="hole_wall_back" size="0.0125 0.0025 0.0325" pos="0 -0.01 0.0325" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- Left wall (-X side) -->
-      <geom type="box" name="hole_wall_left" size="0.0025 0.0075 0.025" pos="-0.01 0 0.025" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.004 1" solimp="0.98 0.999 0.0001 0.5 2"/>
+      <geom type="box" name="hole_wall_left" size="0.0025 0.0075 0.0325" pos="-0.01 0 0.0325" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- Right wall (+X side) -->
-      <geom type="box" name="hole_wall_right" size="0.0025 0.0075 0.025" pos="0.01 0 0.025" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.004 1" solimp="0.98 0.999 0.0001 0.5 2"/>
+      <geom type="box" name="hole_wall_right" size="0.0025 0.0075 0.0325" pos="0.01 0 0.0325" rgba="0.8 0.4 0.2 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+
+      <!-- Hole bounds visualization (matches hole_half termination box) -->
+      <site name="hole_bounds_viz" type="box" size="0.015 0.015 0.07" pos="0 0 0" rgba="1 0 0 0.1" group="3"/>
 
       <!-- Sites for observations -->
-      <site name="object_site" pos="0 0 0.05" size="0.0001" rgba="1 0 0 1"/>
-      <site name="hole_top" pos="0 0 0.05" size="0.0001" rgba="1 0 0 1" group="0"/>
-      <site name="hole_bottom" pos="0 0 0.0" size="0.0001" rgba="0 1 0 1" group="0"/>
+      <!-- hole_top: top of 6.5cm hole; object_site: 2.5cm below top (mirrors peg cylinder_center spacing); hole_bottom: actual floor -->
+      <site name="object_site" pos="0 0 0.045" size="0.0001" rgba="1 0 0 1"/>
+      <site name="hole_top" pos="0 0 0.07" size="0.0001" rgba="1 0 0 1" group="0"/>
+      <site name="hole_bottom" pos="0 0 0.02" size="0.0001" rgba="0 1 0 1" group="0"/>
     </body>
   </worldbody>
 </mujoco>

@@ -32,7 +32,7 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.velocity import mdp
-from mjlab.terrains import TerrainEntityCfg
+from mjlab.terrains import TerrainImporterCfg
 from mjlab.utils.lab_api.math import axis_angle_from_quat, quat_apply_inverse, quat_conjugate, quat_mul, sample_uniform
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
@@ -601,12 +601,14 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # Fingertip friction randomization (Robotiq 2F-85 pads)
         "fingertip_friction_slide": EventTermCfg(
             mode="startup",
-            func=mdp.dr.geom_friction,
+            func=mdp.randomize_field,
+            domain_randomization=True,
             params={
                 "asset_cfg": SceneEntityCfg(
                     "robot", geom_names=r"(left|right)_pad[12]"
                 ),
                 "operation": "abs",
+                "field": "geom_friction",
                 "distribution": "uniform",
                 "axes": [0],
                 "ranges": (0.3, 1.5),
@@ -614,12 +616,14 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "fingertip_friction_spin": EventTermCfg(
             mode="startup",
-            func=mdp.dr.geom_friction,
+            func=mdp.randomize_field,
+            domain_randomization=True,
             params={
                 "asset_cfg": SceneEntityCfg(
                     "robot", geom_names=r"(left|right)_pad[12]"
                 ),
                 "operation": "abs",
+                "field": "geom_friction",
                 "distribution": "log_uniform",
                 "axes": [1],
                 "ranges": (1e-4, 2e-2),
@@ -627,12 +631,14 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "fingertip_friction_roll": EventTermCfg(
             mode="startup",
-            func=mdp.dr.geom_friction,
+            func=mdp.randomize_field,
+            domain_randomization=True,
             params={
                 "asset_cfg": SceneEntityCfg(
                     "robot", geom_names=r"(left|right)_pad[12]"
                 ),
                 "operation": "abs",
+                "field": "geom_friction",
                 "distribution": "log_uniform",
                 "axes": [2],
                 "ranges": (1e-5, 5e-3),
@@ -735,10 +741,10 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # --- Curriculum ---
     curriculum = {
         "action_rate_l2_weight": CurriculumTermCfg(
-            func=mdp.reward_curriculum,
+            func=manipulation_mdp.reward_weight,
             params={
                 "reward_name": "action_rate_l2",
-                "stages": [
+                "weight_stages": [
                     {"step": 0, "weight": -0.01},
                     {"step": 2400, "weight": -0.04},
                     {"step": 4800, "weight": -0.07},
@@ -747,10 +753,10 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         ),
         "joint_vel_hinge_weight": CurriculumTermCfg(
-            func=mdp.reward_curriculum,
+            func=manipulation_mdp.reward_weight,
             params={
                 "reward_name": "joint_vel_hinge",
-                "stages": [
+                "weight_stages": [
                     {"step": 0, "weight": -0.01},
                     {"step": 2400, "weight": -0.04},
                     {"step": 4800, "weight": -0.07},
@@ -762,7 +768,7 @@ def kinova_peg_in_hole_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(
-            terrain=TerrainEntityCfg(terrain_type="plane"),
+            terrain=TerrainImporterCfg(terrain_type="plane"),
             num_envs=4096,
             env_spacing=1.0,
             entities={
