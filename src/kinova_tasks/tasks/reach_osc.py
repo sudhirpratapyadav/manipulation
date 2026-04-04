@@ -285,6 +285,24 @@ def pose_success(
 # ---------------------------------------------------------------------------
 
 
+def ori_reward(
+    env: ManagerBasedRlEnv,
+    std: float = 0.3,
+    entity_name: str = "robot",
+    site_name: str = "pinch_site",
+    command_name: str = "reach_pose",
+) -> torch.Tensor:
+    """Gaussian orientation reward based on axis-angle error magnitude."""
+    robot: Entity = env.scene[entity_name]
+    site_ids = robot.find_sites(site_name)[0]
+    ee_pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
+    ee_quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
+    cmd = _get_reach_command(env, command_name)
+    _, rot_err = compute_pose_error(ee_pos, ee_quat, cmd.target_pos, cmd.target_quat)
+    rot_sq = torch.sum(torch.square(rot_err), dim=-1)
+    return torch.exp(-rot_sq / (std ** 2))
+
+
 class reach_reward:
     """Gaussian reach reward. Draws EE frame and action arrow via debug_vis.
     Target frame is drawn by ReachPoseCommand._debug_vis_impl.
@@ -365,14 +383,14 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     Actions (6D):
         relative pos + axis-angle delta applied to current EE pose
-    Observations (23D):
-        joint_pos(7) + joint_vel(7) + ee_pos_vec(3) + last_action(6)
+    Observations (26D):
+        joint_pos(7) + joint_vel(7) + ee_to_target(6) + last_action(6)
     """
     actor_terms = {
         "joint_pos": ObservationTermCfg(func=joint_pos),
         "joint_vel": ObservationTermCfg(func=joint_vel),
-        "ee_pos_vec": ObservationTermCfg(
-            func=ee_pos_vec,
+        "ee_to_target": ObservationTermCfg(
+            func=ee_to_target,
             params={"command_name": "reach_pose"},
         ),
         "actions": ObservationTermCfg(func=mdp.last_action),
@@ -388,7 +406,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             delta_pos_scale=0.03,       # 3 cm per unit action
             delta_ori_scale=0.02,       # ~1.1° per unit action
             position_weight=1.0,
-            orientation_weight=0.5,
+            orientation_weight=1.0,
             kp_pos=50.0,
             kd_pos=10.0,
             kp_ori=50.0,
@@ -405,7 +423,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             resampling_time_range=(3.0, 3.0),  # resample every 3 s mid-episode
             debug_vis=True,
             pos_range=(-0.15, 0.15),
-            ori_range=(-0.3, 0.3),
+            ori_range=(-3.14159, 3.14159),
             pos_threshold=0.02,
         ),
     }
@@ -426,12 +444,22 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "reach": RewardTermCfg(
             func=reach_reward,
             weight=1.0,
-            params={"std": 0.5, "command_name": "reach_pose"},
+            params={"std": 0.3, "command_name": "reach_pose"},
         ),
         "reach_precise": RewardTermCfg(
             func=reach_reward,
             weight=1.0,
             params={"std": 0.1, "command_name": "reach_pose"},
+        ),
+        "ori": RewardTermCfg(
+            func=ori_reward,
+            weight=1.0,
+            params={"std": 1.0, "command_name": "reach_pose"},
+        ),
+        "ori_precise": RewardTermCfg(
+            func=ori_reward,
+            weight=1.0,
+            params={"std": 0.3, "command_name": "reach_pose"},
         ),
     }
 

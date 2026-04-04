@@ -209,7 +209,7 @@ nohup env WANDB_API_KEY=wandb_v1_DbIrV2yxipZbymtBPEeM08CTnxH_7eefmb9Dkda9ZI352h4
 
 
 
-CUDA_VISIBLE_DEVICES=1 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc
+nohup env CUDA_VISIBLE_DEVICES=1 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc > reach_osc.log 2>&1 &
 
 
 nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc > reach_osc.log 2>&1 &
