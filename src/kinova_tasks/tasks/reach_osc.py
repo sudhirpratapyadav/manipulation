@@ -762,6 +762,10 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             num_envs=1,
             env_spacing=1.5,
             entities={"robot": get_kinova_no_gripper_robot_cfg()},
+            spec_fn=lambda spec: [
+                setattr(g, "contype", 0) or setattr(g, "conaffinity", 0)
+                for g in spec.geoms if g.name == "terrain"
+            ],
         ),
         observations={
             "actor": ObservationGroupCfg(actor_terms, enable_corruption=False),
