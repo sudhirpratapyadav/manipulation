@@ -27,6 +27,7 @@ from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 import mjlab.envs.mdp as mdp
 from mjlab.utils.lab_api.math import (
+    axis_angle_from_quat,
     compute_pose_error,
     matrix_from_quat,
     quat_from_euler_xyz,
@@ -39,6 +40,10 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.viewer.debug_visualizer import DebugVisualizer
 
+
+_HOME_JOINT_POS = (0.0, 0.3490658504, 0.0, 1.7453292519, 0.0, -0.5235987756, -1.5707963268)
+_HOME_POS = (0.733607, -0.024850, 0.523015)
+_HOME_QUAT = (0.5, 0.5, 0.5, 0.5)  # w, x, y, z
 
 _TARGET_FRAME_COLORS = (
     (1.0, 0.4, 0.4),  # X — coral red
@@ -82,13 +87,22 @@ class ReachPoseCommand(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         n = len(env_ids)
         ori_r = self.cfg.ori_range
-
         lo = torch.tensor(self.cfg.pos_lo, device=self.device)
         hi = torch.tensor(self.cfg.pos_hi, device=self.device)
-        self.target_pos[env_ids] = sample_uniform(lo, hi, (n, 3), device=self.device)
 
-        robot: Entity = self._env.scene[self.cfg.entity_name]
-        ee_quat = robot.data.site_quat_w[env_ids, self._site_ids].squeeze(1)
+        if self.cfg.target_pos_delta_max is not None:
+            home_pos = torch.tensor(_HOME_POS, device=self.device)
+            delta = sample_uniform(
+                torch.full((3,), -self.cfg.target_pos_delta_max, device=self.device),
+                torch.full((3,), self.cfg.target_pos_delta_max, device=self.device),
+                (n, 3),
+                device=self.device,
+            )
+            self.target_pos[env_ids] = torch.max(torch.min(home_pos + delta, hi), lo)
+        else:
+            self.target_pos[env_ids] = sample_uniform(lo, hi, (n, 3), device=self.device)
+
+        home_quat = torch.tensor(_HOME_QUAT, device=self.device).unsqueeze(0).expand(n, -1)
         euler = sample_uniform(
             torch.tensor([ori_r[0]] * 3, device=self.device),
             torch.tensor([ori_r[1]] * 3, device=self.device),
@@ -96,7 +110,7 @@ class ReachPoseCommand(CommandTerm):
             device=self.device,
         )
         delta_quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
-        self.target_quat[env_ids] = quat_mul(ee_quat, delta_quat)
+        self.target_quat[env_ids] = quat_mul(home_quat, delta_quat)
 
     def _update_metrics(self) -> None:
         pass
@@ -157,6 +171,7 @@ class ReachPoseCommandCfg(CommandTermCfg):
     pos_lo: tuple[float, float, float] = (-1.0, -1.0, -0.3)
     pos_hi: tuple[float, float, float] = ( 1.0,  1.0,  1.2)
     ori_range: tuple[float, float] = (-0.3, 0.3)
+    target_pos_delta_max: float | None = None
     pos_threshold: float = 0.02
 
     def build(self, env: ManagerBasedRlEnv) -> ReachPoseCommand:
@@ -180,6 +195,28 @@ def joint_pos(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tenso
     """Absolute joint positions (rad)."""
     robot: Entity = env.scene[entity_name]
     return robot.data.joint_pos
+
+
+def ee_pose(
+    env: ManagerBasedRlEnv,
+    entity_name: str = "robot",
+    site_name: str = "pinch_site",
+) -> torch.Tensor:
+    """Current EE pose [pos(3), axis_angle(3)] in world frame."""
+    robot: Entity = env.scene[entity_name]
+    site_ids = robot.find_sites(site_name)[0]
+    pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
+    quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
+    return torch.cat([pos, axis_angle_from_quat(quat)], dim=-1)
+
+
+def target_pose(
+    env: ManagerBasedRlEnv,
+    command_name: str = "reach_pose",
+) -> torch.Tensor:
+    """Target pose [pos(3), axis_angle(3)] in world frame."""
+    cmd = _get_reach_command(env, command_name)
+    return torch.cat([cmd.target_pos, axis_angle_from_quat(cmd.target_quat)], dim=-1)
 
 
 def joint_vel(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tensor:
@@ -408,13 +445,30 @@ def reset_joints_random(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     entity_name: str = "robot",
+    joint_delta_max: float | None = None,
 ) -> None:
-    """Reset joints to positions sampled uniformly within soft limits."""
+    """Reset joints to home pose ± uniform delta, clipped to soft limits.
+
+    If joint_delta_max is None, falls back to uniform sampling over full soft limits.
+    """
     robot: Entity = env.scene[entity_name]
     soft_limits = robot.data.soft_joint_pos_limits  # (num_envs, num_joints, 2)
     lo = soft_limits[env_ids, :, 0]
     hi = soft_limits[env_ids, :, 1]
-    joint_pos = lo + (hi - lo) * torch.rand_like(lo)
+
+    if joint_delta_max is None:
+        joint_pos = lo + (hi - lo) * torch.rand_like(lo)
+    else:
+        n = len(env_ids)
+        home = torch.tensor(_HOME_JOINT_POS, device=env.device).unsqueeze(0).expand(n, -1)
+        delta = sample_uniform(
+            torch.full((len(_HOME_JOINT_POS),), -joint_delta_max, device=env.device),
+            torch.full((len(_HOME_JOINT_POS),), joint_delta_max, device=env.device),
+            (n, len(_HOME_JOINT_POS)),
+            device=env.device,
+        )
+        joint_pos = torch.max(torch.min(home + delta, hi), lo)
+
     joint_vel = torch.zeros_like(joint_pos)
     robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
@@ -432,21 +486,22 @@ def reach_ori_curriculum(
     hold_iters: int = 200,
     step_iters: int = 100,
     step_deg: float = 10.0,
+    max_deg: float = 180.0,
     num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
-    """Grow ori_range from start_deg → ±180° as training progresses.
+    """Grow ori_range from start_deg → max_deg as training progresses.
 
     Schedule (training iterations = common_step_counter // num_steps_per_env):
       [0, hold_iters)                       → ±start_deg
       [hold_iters, hold_iters+step_iters)   → ±(start_deg + step_deg)
-      every further step_iters              → +step_deg … until ±180°
+      every further step_iters              → +step_deg … until ±max_deg
     """
     del env_ids  # unused — curriculum applies globally
     command_term = env.command_manager.get_term(command_name)
     cfg: ReachPoseCommandCfg = command_term.cfg  # type: ignore[assignment]
 
     train_iter = env.common_step_counter // num_steps_per_env
-    max_rad = _math.pi  # full span ±180°
+    max_rad = max_deg * _DEG_TO_RAD
 
     if train_iter < hold_iters:
         current_rad = start_deg * _DEG_TO_RAD
@@ -461,6 +516,76 @@ def reach_ori_curriculum(
     return {"ori_range_deg": torch.tensor(current_rad / _DEG_TO_RAD)}
 
 
+def reach_pos_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str = "reach_pose",
+    start_m: float = 0.05,
+    hold_iters: int = 200,
+    step_iters: int = 100,
+    step_m: float = 0.05,
+    max_m: float = 0.5,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Grow target_pos_delta_max from start_m → max_m as training progresses.
+
+    Schedule (training iterations = common_step_counter // num_steps_per_env):
+      [0, hold_iters)                       → start_m
+      [hold_iters, hold_iters+step_iters)   → start_m + step_m
+      every further step_iters              → +step_m … until max_m
+    """
+    del env_ids
+    command_term = env.command_manager.get_term(command_name)
+    cfg: ReachPoseCommandCfg = command_term.cfg  # type: ignore[assignment]
+
+    train_iter = env.common_step_counter // num_steps_per_env
+
+    if train_iter < hold_iters:
+        current = start_m
+    else:
+        increments = (train_iter - hold_iters) // step_iters + 1
+        current = min(start_m + increments * step_m, max_m)
+
+    cfg.target_pos_delta_max = current
+    return {"target_pos_delta_max_m": torch.tensor(current)}
+
+
+def reach_joint_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    event_name: str = "reset_robot_joints",
+    start_deg: float = 10.0,
+    hold_iters: int = 200,
+    step_iters: int = 100,
+    step_deg: float = 10.0,
+    max_deg: float = 180.0,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Grow joint_delta_max from start_deg → max_deg as training progresses.
+
+    Schedule (training iterations = common_step_counter // num_steps_per_env):
+      [0, hold_iters)                       → start_deg
+      [hold_iters, hold_iters+step_iters)   → start_deg + step_deg
+      every further step_iters              → +step_deg … until max_deg
+    """
+    del env_ids
+    event_cfg = env.event_manager.get_term_cfg(event_name)
+
+    train_iter = env.common_step_counter // num_steps_per_env
+    max_rad = max_deg * _DEG_TO_RAD
+
+    if train_iter < hold_iters:
+        current_rad = start_deg * _DEG_TO_RAD
+    else:
+        increments = (train_iter - hold_iters) // step_iters + 1
+        current_rad = min(
+            start_deg * _DEG_TO_RAD + increments * step_deg * _DEG_TO_RAD,
+            max_rad,
+        )
+
+    event_cfg.params["joint_delta_max"] = current_rad
+    return {"joint_delta_max_deg": torch.tensor(current_rad / _DEG_TO_RAD)}
+
 
 # ---------------------------------------------------------------------------
 # Environment configuration
@@ -471,8 +596,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Kinova Gen3 reach task with OSC torque control (arm only, no gripper).
 
     Goal: move pinch_site to a randomised 6D target pose. The target is
-    resampled every 3 s (mid-episode) via the command manager, following
-    the standard mjlab pattern.
+    resampled only on episode reset (resampling_time_range > episode_length_s).
 
     Actions (6D):
         relative pos + axis-angle delta applied to current EE pose
@@ -484,6 +608,11 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "joint_vel": ObservationTermCfg(func=joint_vel),
         "ee_to_target": ObservationTermCfg(
             func=ee_to_target,
+            params={"command_name": "reach_pose"},
+        ),
+        "ee_pose": ObservationTermCfg(func=ee_pose),
+        "target_pose": ObservationTermCfg(
+            func=target_pose,
             params={"command_name": "reach_pose"},
         ),
         "actions": ObservationTermCfg(func=mdp.last_action),
@@ -513,11 +642,12 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     commands = {
         "reach_pose": ReachPoseCommandCfg(
-            resampling_time_range=(3.0, 3.0),  # resample every 3 s mid-episode
+            resampling_time_range=(1e9, 1e9),  # only resample on reset
             debug_vis=True,
             pos_lo=(-1.0, -1.0, -0.3),
             pos_hi=( 1.0,  1.0,  1.2),
             ori_range=(-3.14159, 3.14159),
+            target_pos_delta_max=0.20,  # seeded; grown by reach_pos_curriculum
             pos_threshold=0.02,
         ),
     }
@@ -526,7 +656,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "reset_robot_joints": EventTermCfg(
             func=reset_joints_random,
             mode="reset",
-            params={"entity_name": "robot"},
+            params={"entity_name": "robot", "joint_delta_max": 10.0 * _DEG_TO_RAD},  # seeded; grown by reach_joint_curriculum
         ),
     }
 
@@ -566,7 +696,32 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "start_deg": 10.0,
                 "hold_iters": 200,
                 "step_iters": 100,
-                "step_deg": 10.0,
+                "step_deg": 5.0,
+                "max_deg": 20.0,
+                "num_steps_per_env": 24,
+            },
+        ),
+        "target_pos_delta": CurriculumTermCfg(
+            func=reach_pos_curriculum,
+            params={
+                "command_name": "reach_pose",
+                "start_m": 0.20,
+                "hold_iters": 200,
+                "step_iters": 100,
+                "step_m": 0.10,
+                "max_m": 1.0,
+                "num_steps_per_env": 24,
+            },
+        ),
+        "joint_delta": CurriculumTermCfg(
+            func=reach_joint_curriculum,
+            params={
+                "event_name": "reset_robot_joints",
+                "start_deg": 10.0,
+                "hold_iters": 200,
+                "step_iters": 100,
+                "step_deg": 5.0,
+                "max_deg": 20.0,
                 "num_steps_per_env": 24,
             },
         ),
@@ -612,7 +767,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             origin_type=ViewerConfig.OriginType.ASSET_BODY,
             entity_name="robot",
             body_name="base_link",
-            distance=1.5,
+            distance=2.2,
             elevation=-5.0,
             azimuth=120.0,
         ),

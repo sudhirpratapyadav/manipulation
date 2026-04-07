@@ -213,3 +213,16 @@ nohup env CUDA_VISIBLE_DEVICES=1 WANDB_API_KEY=wandb_v1_DbIrV2yxipZbymtBPEeM08CT
 
 
 nohup env WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 4096 --agent.max-iterations 1_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc > reach_osc.log 2>&1 &
+
+
+uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 1024 --agent.max-iterations 1_0 --agent.experiment-name reach_osc
+
+
+
+
+nohup env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Reach-Osc-Kinova --env.scene.num-envs 1024 --agent.max-iterations 5_000   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name reach_osc --video True --video-length 100 --video-interval 100 > reach_osc.log 2>&1 &
+
+
+
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Reach-Osc-Kinova --viewer viser 
+--checkpoint-file /media/cvlab/EXTDRIVE/sudhir/continual_learning/manipulation/logs/rsl_rl/reach_osc/2026-04-05_13-42-17/model_300.pt

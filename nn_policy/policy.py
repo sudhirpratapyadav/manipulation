@@ -85,7 +85,8 @@ class DeployPolicy(nn.Module):
         hidden_dims = tuple(actor_sd[k].shape[0] for k in linear_keys[:-1])
 
         policy = DeployPolicy(obs_dim, action_dim, hidden_dims, obs_key)
-        filtered = {k: v for k, v in actor_sd.items() if k != "std"}
+        filtered = {k: v for k, v in actor_sd.items()
+                    if k != "std" and not k.startswith("distribution.")}
         policy.load_state_dict(filtered, strict=True)
         policy.to(device).eval()
         return policy

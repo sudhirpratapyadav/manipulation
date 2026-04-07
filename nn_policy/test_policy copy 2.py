@@ -29,6 +29,7 @@ import ctypes
 import multiprocessing as mp
 import threading
 import time
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -38,12 +39,31 @@ import viser
 from scipy.spatial.transform import Rotation
 
 from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML, get_assets
+from mjlab.actuator import XmlMotorActuatorCfg
+from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
+from mjlab.envs.mdp.actions.actions import JointEffortActionCfg
+from mjlab.sim.sim import MujocoCfg, Simulation, SimulationCfg
 from policy import PolicyAgent
 from viewer import ViserMujocoScene
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 _TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
 _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
+
+# ── Sim initial state — matches HOME_DEG ──────────────────────────────────────
+DEMO_INIT_STATE = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.0),
+    joint_pos={
+        "joint_1":  0.0,
+        "joint_2":  0.3490658504,   # 20°
+        "joint_3":  0.0,
+        "joint_4":  1.7453292519,   # 100°
+        "joint_5":  0.0,
+        "joint_6": -0.5235987756,   # -30°
+        "joint_7": -1.5707963268,   # -90°
+    },
+    joint_vel={".*": 0.0},
+)
 
 # ── OSC gains — must match the training environment (reach_osc.py) ────────────
 KP_POS         =  50.0
@@ -347,30 +367,32 @@ def policy_process_fn(checkpoint_path, device_str,
 
 # ── OSC thread ────────────────────────────────────────────────────────────────
 
-def osc_thread_fn(mj_model, mj_data, robot,
+def osc_thread_fn(entity, sim, effort_action, robot, arm_ids, device,
                   shm_q, shm_dq, shm_osc_target, shm_gains,
-                  shm_osc_hz, osc_reset_event, stop_event,
-                  posture_target, home_qpos, arm_q_idxs, arm_dq_idxs, arm_ctrl_idxs):
-    """Thread in main process: 500 Hz OSC + physics via direct MuJoCo."""
+                  shm_osc_hz, osc_reset_event, stop_event, posture_target):
+    """Thread in main process: 500 Hz OSC + physics."""
     inner_dt = 1.0 / OSC_HZ
     iters    = 0
     t_rate   = time.time()
+    t_ctrl_acc = 0.0   # accumulated time in compute_osc_torques
+    t_sim_acc  = 0.0   # accumulated time in sim step
 
     while not stop_event.is_set():
         t0 = time.time()
 
         if osc_reset_event.is_set():
             osc_reset_event.clear()
-            mj_data.qpos[arm_q_idxs] = home_qpos
-            mj_data.qvel[arm_dq_idxs] = 0.0
-            mj_data.ctrl[arm_ctrl_idxs] = 0.0
-            mujoco.mj_forward(mj_model, mj_data)
-            iters  = 0
-            t_rate = time.time()
+            entity.write_joint_position_to_sim(entity.data.default_joint_pos, joint_ids=None)
+            sim.forward()
+            effort_action.reset()
+            iters      = 0
+            t_rate     = time.time()
+            t_ctrl_acc = 0.0
+            t_sim_acc  = 0.0
             print("[osc] Reset done")
 
-        q_sim  = mj_data.qpos[arm_q_idxs].copy()
-        dq_sim = mj_data.qvel[arm_dq_idxs].copy()
+        q_sim  = entity.data.joint_pos[0, arm_ids].cpu().numpy()
+        dq_sim = entity.data.joint_vel[0, arm_ids].cpu().numpy()
 
         # Publish current state for policy process
         _np(shm_q)[:] = q_sim
@@ -381,21 +403,38 @@ def osc_thread_fn(mj_model, mj_data, robot,
         osc_tgt_pos       = tgt[:3]
         osc_tgt_quat_xyzw = tgt[3:]
 
-        gains   = _gains_dict(_np(shm_gains).copy())
+        gains = _gains_dict(_np(shm_gains).copy())
+
+        _tc0 = time.perf_counter()
         tau_sim = compute_osc_torques(
             robot, osc_tgt_pos, osc_tgt_quat_xyzw, q_sim, dq_sim,
             gains=gains, posture_target=posture_target,
         )
+        t_ctrl_acc += time.perf_counter() - _tc0
 
-        mj_data.ctrl[arm_ctrl_idxs] = tau_sim
-        mujoco.mj_step(mj_model, mj_data)
+        _ts0 = time.perf_counter()
+        tau_t = torch.from_numpy(tau_sim).float().to(device).unsqueeze(0)
+        effort_action.process_actions(tau_t)
+        effort_action.apply_actions()
+        entity.write_data_to_sim()
+        sim.step()
+        t_sim_acc += time.perf_counter() - _ts0
 
         iters += 1
         dt_rate = time.time() - t_rate
         if dt_rate >= 1.0:
             _np(shm_osc_hz)[0] = iters / dt_rate
-            iters  = 0
-            t_rate = time.time()
+            print(
+                f"[osc] {iters/dt_rate:.0f} Hz  "
+                f"ctrl {t_ctrl_acc/iters*1e3:.2f} ms  "
+                f"sim {t_sim_acc/iters*1e3:.2f} ms  "
+                f"total {(t_ctrl_acc+t_sim_acc)/iters*1e3:.2f} ms/iter",
+                flush=True,
+            )
+            iters      = 0
+            t_rate     = time.time()
+            t_ctrl_acc = 0.0
+            t_sim_acc  = 0.0
 
         elapsed = time.time() - t0
         if elapsed < inner_dt:
@@ -404,8 +443,8 @@ def osc_thread_fn(mj_model, mj_data, robot,
 
 # ── Viz thread ────────────────────────────────────────────────────────────────
 
-def viz_thread_fn(sim_view, mj_model_viz, mj_data_viz,
-                  arm_q_idxs, shm_q, shm_viz_hz, stop_event):
+def viz_thread_fn(sim_view, mj_model_cpu, mj_data_sim,
+                  entity_ctrl, arm_ids, arm_q_idxs, shm_viz_hz, stop_event):
     period = 1.0 / VIZ_HZ
     iters  = 0
     t_rate = time.time()
@@ -413,9 +452,10 @@ def viz_thread_fn(sim_view, mj_model_viz, mj_data_viz,
     while not stop_event.is_set():
         t = time.time()
 
-        mj_data_viz.qpos[arm_q_idxs] = _np(shm_q)
-        mujoco.mj_kinematics(mj_model_viz, mj_data_viz)
-        sim_view.update(mj_data_viz)
+        q_sim = entity_ctrl.data.joint_pos[0, arm_ids].cpu().numpy()
+        mj_data_sim.qpos.flat[arm_q_idxs] = q_sim
+        mujoco.mj_kinematics(mj_model_cpu, mj_data_sim)
+        sim_view.update(mj_data_sim)
 
         iters += 1
         dt_rate = time.time() - t_rate
@@ -438,6 +478,7 @@ def main():
     args = parser.parse_args()
 
     policy_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    sim_device    = "cpu"   # single-env MuJoCo is faster on CPU (no GPU launch overhead)
 
     # ── Shared memory ──────────────────────────────────────────────────────
     shm_command    = mp.Array(ctypes.c_double, 7)   # pos(3) + quat_xyzw(4)
@@ -471,7 +512,7 @@ def main():
     _np(shm_osc_target)[3:] = q_xyzw0
     print("  OK")
 
-    # ── Spawn policy process (before any CUDA init in main process) ───────
+    # ── Spawn policy process (before CUDA init in main process) ───────────
     policy_proc = mp.Process(
         target=policy_process_fn,
         args=(args.checkpoint, policy_device,
@@ -483,31 +524,45 @@ def main():
     policy_proc.start()
     print(f"[main] Policy process PID: {policy_proc.pid}")
 
-    # ── MuJoCo sim (physics) ───────────────────────────────────────────────
-    def _compile_model():
+    # ── Sim ────────────────────────────────────────────────────────────────
+    def get_spec():
         spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
         spec.assets = get_assets(spec.meshdir)
-        return spec.compile()
+        return spec
 
-    mj_model     = _compile_model()
-    mj_data_phys = mujoco.MjData(mj_model)
-    mj_data_viz  = mujoco.MjData(mj_model)   # separate data for viz thread
+    robot_cfg = EntityCfg(
+        init_state=DEMO_INIT_STATE,
+        collisions=(),
+        spec_fn=get_spec,
+        articulation=EntityArticulationInfoCfg(
+            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            soft_joint_pos_limit_factor=0.9,
+        ),
+    )
+    entity_ctrl = Entity(robot_cfg)
+    model_ctrl  = entity_ctrl.compile()
+    sim_ctrl    = Simulation(num_envs=1, cfg=SimulationCfg(mujoco=MujocoCfg(timestep=PHYSICS_DT, gravity=(0,0,-9.81))), model=model_ctrl, device=sim_device)
+    entity_ctrl.initialize(model_ctrl, sim_ctrl.model, sim_ctrl.data, sim_device)
+    entity_ctrl.write_joint_position_to_sim(entity_ctrl.data.default_joint_pos, joint_ids=None)
+    sim_ctrl.forward()
 
-    arm_q_idxs    = np.array([mj_model.joint(n).qposadr.item() for n in _ARM_JOINT_NAMES])
-    arm_dq_idxs   = np.array([mj_model.joint(n).dofadr.item()  for n in _ARM_JOINT_NAMES])
-    arm_ctrl_idxs = np.array([mj_model.actuator(n).id          for n in _ARM_JOINT_NAMES])
+    env_ns        = SimpleNamespace(num_envs=1, device=sim_device, scene={"robot": entity_ctrl}, sim=sim_ctrl)
+    effort_action = JointEffortActionCfg(entity_name="robot", actuator_names=("joint_.*",)).build(env_ns)
+    arm_ids       = effort_action.target_ids
 
-    mj_data_phys.qpos[arm_q_idxs] = home_rad
-    mujoco.mj_forward(mj_model, mj_data_phys)
+    # ── CPU MuJoCo model/data for visualization ────────────────────────────
+    mj_model_cpu = get_spec().compile()
+    mj_data_sim  = mujoco.MjData(mj_model_cpu)
+    arm_q_idxs   = np.array([mj_model_cpu.joint(n).qposadr for n in _ARM_JOINT_NAMES])
 
-    mj_data_viz.qpos[arm_q_idxs] = home_rad
-    mujoco.mj_kinematics(mj_model, mj_data_viz)
+    mj_data_sim.qpos.flat[arm_q_idxs] = home_rad
+    mujoco.mj_kinematics(mj_model_cpu, mj_data_sim)
 
     robot_sim = PinocchioArm(str(_TORQUE_XML), ee_frame="pinch_site")  # OSC thread
 
     # ── Viser ──────────────────────────────────────────────────────────────
     server   = viser.ViserServer(label="Kinova Sim Policy")
-    scene    = ViserMujocoScene.create(server, mj_model)
+    scene    = ViserMujocoScene.create(server, mj_model_cpu)
     sim_view = scene.add_robot("sim", color=(0.75, 0.75, 0.75, 1.00))
     scene.create_visualization_gui(camera_distance=1.2, camera_azimuth=135.0, camera_elevation=30.0)
 
@@ -598,15 +653,14 @@ def main():
     reset_btn.on_click(_on_reset)
 
     threading.Thread(target=osc_thread_fn, daemon=True, args=(
-        mj_model, mj_data_phys, robot_sim,
+        entity_ctrl, sim_ctrl, effort_action, robot_sim, arm_ids, sim_device,
         shm_q, shm_dq, shm_osc_target, shm_gains,
-        shm_osc_hz, osc_reset_event, stop_event,
-        posture_target, home_rad, arm_q_idxs, arm_dq_idxs, arm_ctrl_idxs,
+        shm_osc_hz, osc_reset_event, stop_event, posture_target,
     )).start()
 
     threading.Thread(target=viz_thread_fn, daemon=True, args=(
-        sim_view, mj_model, mj_data_viz,
-        arm_q_idxs, shm_q, shm_viz_hz, stop_event,
+        sim_view, mj_model_cpu, mj_data_sim,
+        entity_ctrl, arm_ids, arm_q_idxs, shm_viz_hz, stop_event,
     )).start()
 
     print("Running — drag the viser transform handle to move the command target.")
@@ -631,7 +685,7 @@ def main():
             )
 
             # ── EE state + action vis ──────────────────────────────────────
-            q_sim = _np(shm_q).copy()
+            q_sim = entity_ctrl.data.joint_pos[0, arm_ids].cpu().numpy()
             ee_pos, ee_rot = robot_main.fk(q_sim)
             ee_quat_xyzw = Rotation.from_matrix(ee_rot).as_quat()
             pos_err_m = float(np.linalg.norm(cmd_pos - ee_pos))
