@@ -107,13 +107,13 @@
 
   <actuator>
     <!-- Arm motor actuators (torque control) -->
-    <motor name="joint_1" joint="joint_1" ctrlrange="-390 390" forcerange="-39 39"/>
-    <motor name="joint_2" joint="joint_2" ctrlrange="-390 390" forcerange="-39 39"/>
-    <motor name="joint_3" joint="joint_3" ctrlrange="-390 390" forcerange="-39 39"/>
-    <motor name="joint_4" joint="joint_4" ctrlrange="-390 390" forcerange="-39 39"/>
-    <motor name="joint_5" joint="joint_5" ctrlrange="-90 90"   forcerange="-9 9"/>
-    <motor name="joint_6" joint="joint_6" ctrlrange="-90 90"   forcerange="-9 9"/>
-    <motor name="joint_7" joint="joint_7" ctrlrange="-90 90"   forcerange="-9 9"/>
+    <motor name="joint_1" joint="joint_1" ctrlrange="-39 39" forcerange="-39 39"/>
+    <motor name="joint_2" joint="joint_2" ctrlrange="-39 39" forcerange="-39 39"/>
+    <motor name="joint_3" joint="joint_3" ctrlrange="-39 39" forcerange="-39 39"/>
+    <motor name="joint_4" joint="joint_4" ctrlrange="-39 39" forcerange="-39 39"/>
+    <motor name="joint_5" joint="joint_5" ctrlrange="-9 9"   forcerange="-9 9"/>
+    <motor name="joint_6" joint="joint_6" ctrlrange="-9 9"   forcerange="-9 9"/>
+    <motor name="joint_7" joint="joint_7" ctrlrange="-9 9"   forcerange="-9 9"/>
   </actuator>
 
   <keyframe>

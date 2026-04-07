@@ -7,12 +7,11 @@
       <geom type="box" name="peg_base" size="0.015 0.015 0.02" mass="0.007" rgba="0.2 0.6 0.8 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
       <!-- Capsule protrusion extending downward for insertion (rounded ends for smoother insertion) -->
       <geom type="capsule" name="peg_cylinder" size="0.005 0.025" pos="0 0 -0.045" mass="0.003" rgba="0.2 0.6 0.8 1.0" condim="4" friction="3 0.1 0.01" contype="1" conaffinity="1" solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
-      <!-- Object site for observations -->
-      <site name="object_site" pos="0 0 0" size="0.0001" rgba="0 0 1 1" group="0"/>
-      <!-- Sites along cylinder axis -->
-      <site name="cylinder_start" pos="0 0 -0.02" size="0.0001" rgba="1 0 0 1" group="0"/>
-      <site name="cylinder_center" pos="0 0 -0.045" size="0.0001" rgba="0 1 0 1" group="0"/>
-      <site name="cylinder_end" pos="0 0 -0.07" size="0.0001" rgba="0 0 1 1" group="0"/>
+      <!-- Sites for observations — invisible, visualised via viser debug_vis -->
+      <site name="object_site"    pos="0 0 0"     size="0.0001" rgba="0 0 0 0" group="4"/>
+      <site name="cylinder_start" pos="0 0 -0.02"  size="0.0001" rgba="0 0 0 0" group="4"/>
+      <site name="cylinder_center" pos="0 0 -0.045" size="0.0001" rgba="0 0 0 0" group="4"/>
+      <site name="cylinder_end"   pos="0 0 -0.07"  size="0.0001" rgba="0 0 0 0" group="4"/>
     </body>
   </worldbody>
 </mujoco>

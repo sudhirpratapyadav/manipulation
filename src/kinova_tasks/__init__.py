@@ -14,6 +14,10 @@ from kinova_tasks.tasks.peg_in_hole import (
     kinova_peg_in_hole_env_cfg,
     kinova_peg_in_hole_ppo_cfg,
 )
+from kinova_tasks.tasks.peg_in_hole_osc import (
+    kinova_peg_in_hole_osc_env_cfg,
+    kinova_peg_in_hole_osc_ppo_cfg,
+)
 from kinova_tasks.tasks.reach_diff_ik import (
     kinova_reach_diff_ik_env_cfg,
     kinova_reach_diff_ik_ppo_cfg,
@@ -45,6 +49,14 @@ register_mjlab_task(
     env_cfg=kinova_peg_in_hole_env_cfg(),
     play_env_cfg=kinova_peg_in_hole_env_cfg(play=True),
     rl_cfg=kinova_peg_in_hole_ppo_cfg(),
+)
+
+# Peg-in-hole task (OSC torque control)
+register_mjlab_task(
+    task_id="Mjlab-Peg-In-Hole-Osc-Kinova",
+    env_cfg=kinova_peg_in_hole_osc_env_cfg(),
+    play_env_cfg=kinova_peg_in_hole_osc_env_cfg(play=True),
+    rl_cfg=kinova_peg_in_hole_osc_ppo_cfg(),
 )
 
 # Reach task (diff-IK, no gripper)

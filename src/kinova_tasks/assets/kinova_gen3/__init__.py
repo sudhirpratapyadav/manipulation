@@ -12,6 +12,7 @@ from .kinova_constants import (
     get_kinova_robot_cfg,
     get_kinova_robot_cfg_closed_gripper,
     get_kinova_robot_cfg_peginhole,
+    get_kinova_robot_cfg_peginhole_osc,
     get_spec,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "get_kinova_robot_cfg",
     "get_kinova_robot_cfg_closed_gripper",
     "get_kinova_robot_cfg_peginhole",
+    "get_kinova_robot_cfg_peginhole_osc",
     "get_spec",
 ]

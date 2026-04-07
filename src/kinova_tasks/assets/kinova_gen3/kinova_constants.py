@@ -13,6 +13,7 @@ from mjlab.utils.os import update_assets
 
 _HERE = Path(__file__).parent
 KINOVA_GEN3_GRIPPER_XML: Path = _HERE / "xmls" / "gen3_gripper.xml"
+KINOVA_GEN3_GRIPPER_TORQUE_XML: Path = _HERE / "xmls" / "gen3_gripper_torque.xml"
 KINOVA_GEN3_NO_GRIPPER_XML: Path = _HERE / "xmls" / "gen3_no_gripper_torque.xml"
 
 
@@ -216,6 +217,13 @@ def get_no_gripper_spec() -> mujoco.MjSpec:
     return spec
 
 
+def get_gripper_torque_spec() -> mujoco.MjSpec:
+    """Load Kinova Gen3 with Robotiq 2F-85 gripper using torque actuators for the arm."""
+    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_TORQUE_XML))
+    spec.assets = get_assets(spec.meshdir)
+    return spec
+
+
 # XmlMotorActuatorCfg keeps the native <motor> torque actuators from the XML
 KINOVA_NO_GRIPPER_ACTUATORS = XmlMotorActuatorCfg(
     target_names_expr=("joint_.*",),
@@ -237,4 +245,36 @@ def get_kinova_no_gripper_robot_cfg() -> EntityCfg:
         collisions=(),
         spec_fn=get_no_gripper_spec,
         articulation=KINOVA_NO_GRIPPER_ARTICULATION,
+    )
+
+
+##
+# Gripper arm with torque actuators (for OSC + gripper tasks).
+##
+
+# XmlMotorActuatorCfg captures the 7 arm <motor> actuators for torque control.
+# fingers_actuator is a tendon-based general actuator controlled separately
+# via write_ctrl (SceneEntityCfg with actuator_names), not through articulation.
+KINOVA_GRIPPER_TORQUE_ARM_ACTUATORS = XmlMotorActuatorCfg(
+    target_names_expr=("joint_.*",),
+)
+
+KINOVA_GRIPPER_TORQUE_ARTICULATION = EntityArticulationInfoCfg(
+    actuators=(KINOVA_GRIPPER_TORQUE_ARM_ACTUATORS,),
+    soft_joint_pos_limit_factor=0.9,
+)
+
+
+def get_kinova_robot_cfg_peginhole_osc() -> EntityCfg:
+    """Get Kinova Gen3 + gripper config for peg-in-hole with OSC torque control.
+
+    Uses gen3_gripper_torque.xml: arm joints are native torque (motor) actuators
+    for OSC, gripper uses the tendon-based fingers_actuator (position).
+    Arm is rotated 90° at joint_1 to face the workspace side.
+    """
+    return EntityCfg(
+        init_state=INIT_STATE_PEGINHOLE,
+        collisions=(),
+        spec_fn=get_gripper_torque_spec,
+        articulation=KINOVA_GRIPPER_TORQUE_ARTICULATION,
     )
