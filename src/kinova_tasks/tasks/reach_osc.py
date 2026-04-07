@@ -25,6 +25,7 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
+from mjlab.terrains import TerrainEntityCfg
 import mjlab.envs.mdp as mdp
 from mjlab.utils.lab_api.math import (
     axis_angle_from_quat,
@@ -98,9 +99,11 @@ class ReachPoseCommand(CommandTerm):
                 (n, 3),
                 device=self.device,
             )
-            self.target_pos[env_ids] = torch.max(torch.min(home_pos + delta, hi), lo)
+            local_pos = torch.max(torch.min(home_pos + delta, hi), lo)
         else:
-            self.target_pos[env_ids] = sample_uniform(lo, hi, (n, 3), device=self.device)
+            local_pos = sample_uniform(lo, hi, (n, 3), device=self.device)
+
+        self.target_pos[env_ids] = local_pos + self._env.scene.env_origins[env_ids]
 
         home_quat = torch.tensor(_HOME_QUAT, device=self.device).unsqueeze(0).expand(n, -1)
         euler = sample_uniform(
@@ -124,32 +127,33 @@ class ReachPoseCommand(CommandTerm):
         if not env_indices:
             return
 
-        # Draw workspace bounding box (edges only) — drawn once, global label.
         lo = np.array(self.cfg.pos_lo, dtype=np.float32)
         hi = np.array(self.cfg.pos_hi, dtype=np.float32)
-        # 8 corners indexed by (ix, iy, iz) ∈ {0,1}³
-        corners = np.array([
+        local_corners = np.array([
             [lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]],
             [lo[0], hi[1], lo[2]], [hi[0], hi[1], lo[2]],
             [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]],
             [lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]],
         ])
-        # 12 edges of the box
         edges = [
             (0,1),(2,3),(4,5),(6,7),  # along x
             (0,2),(1,3),(4,6),(5,7),  # along y
             (0,4),(1,5),(2,6),(3,7),  # along z
         ]
-        for idx, (a, b) in enumerate(edges):
-            visualizer.add_cylinder(
-                start=corners[a],
-                end=corners[b],
-                radius=0.005,
-                color=(0.8, 0.8, 0.2, 0.6),
-                label=f"workspace_box_edge_{idx}",
-            )
 
         for i in env_indices:
+            origin = self._env.scene.env_origins[i].cpu().numpy()
+            corners = local_corners + origin  # offset to world frame
+
+            for idx, (a, b) in enumerate(edges):
+                visualizer.add_cylinder(
+                    start=corners[a],
+                    end=corners[b],
+                    radius=0.005,
+                    color=(0.8, 0.8, 0.2, 0.6),
+                    label=f"workspace_box_edge_{i}_{idx}",
+                )
+
             tgt_pos = self.target_pos[i]
             tgt_quat = self.target_quat[i]
             tgt_rotm = matrix_from_quat(tgt_quat.unsqueeze(0)).squeeze(0).cpu().numpy()
@@ -202,10 +206,10 @@ def ee_pose(
     entity_name: str = "robot",
     site_name: str = "pinch_site",
 ) -> torch.Tensor:
-    """Current EE pose [pos(3), axis_angle(3)] in world frame."""
+    """Current EE pose [pos(3), axis_angle(3)] in local (robot-base) frame."""
     robot: Entity = env.scene[entity_name]
     site_ids = robot.find_sites(site_name)[0]
-    pos = robot.data.site_pos_w[:, site_ids].squeeze(1)
+    pos = robot.data.site_pos_w[:, site_ids].squeeze(1) - env.scene.env_origins
     quat = robot.data.site_quat_w[:, site_ids].squeeze(1)
     return torch.cat([pos, axis_angle_from_quat(quat)], dim=-1)
 
@@ -214,9 +218,10 @@ def target_pose(
     env: ManagerBasedRlEnv,
     command_name: str = "reach_pose",
 ) -> torch.Tensor:
-    """Target pose [pos(3), axis_angle(3)] in world frame."""
+    """Target pose [pos(3), axis_angle(3)] in local (robot-base) frame."""
     cmd = _get_reach_command(env, command_name)
-    return torch.cat([cmd.target_pos, axis_angle_from_quat(cmd.target_quat)], dim=-1)
+    local_pos = cmd.target_pos - env.scene.env_origins
+    return torch.cat([local_pos, axis_angle_from_quat(cmd.target_quat)], dim=-1)
 
 
 def joint_vel(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tensor:
@@ -653,6 +658,11 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     events = {
+        "reset_base": EventTermCfg(
+            func=mdp.reset_root_state_uniform,
+            mode="reset",
+            params={"pose_range": {}, "velocity_range": {}},
+        ),
         "reset_robot_joints": EventTermCfg(
             func=reset_joints_random,
             mode="reset",
@@ -748,6 +758,7 @@ def kinova_reach_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(
+            terrain=TerrainEntityCfg(terrain_type="plane"),
             num_envs=1,
             env_spacing=1.5,
             entities={"robot": get_kinova_no_gripper_robot_cfg()},
