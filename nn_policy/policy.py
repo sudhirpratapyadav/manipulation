@@ -135,11 +135,18 @@ class PolicyAgent:
         """Run one policy inference step.
 
         Args:
-            obs: ``(obs_dim,)`` observation vector.
+            obs: ``(obs_dim,)`` single observation  OR
+                 ``(B, obs_dim)`` batch of observations.
 
         Returns:
-            action: ``(action_dim,)`` raw action from the network.
+            action: ``(action_dim,)`` for single input, or ``(B, action_dim)`` for batch.
         """
-        obs_t  = torch.from_numpy(obs.astype(np.float32)).unsqueeze(0).to(self._device)
-        obs_td = TensorDict({self._obs_key: obs_t}, batch_size=[1])
-        return self.policy(obs_td).squeeze(0).cpu().numpy()   # (action_dim,)
+        single = obs.ndim == 1
+        obs_np = obs.astype(np.float32)
+        if single:
+            obs_np = obs_np[None]          # (1, obs_dim)
+        obs_t  = torch.from_numpy(obs_np).to(self._device)   # (B, obs_dim)
+        B      = obs_t.shape[0]
+        obs_td = TensorDict({self._obs_key: obs_t}, batch_size=[B])
+        out    = self.policy(obs_td).cpu().numpy()            # (B, action_dim)
+        return out[0] if single else out

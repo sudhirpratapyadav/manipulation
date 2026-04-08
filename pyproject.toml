@@ -7,6 +7,12 @@ dependencies = [
     "mjlab",
     "pin>=3.9.0",
     "pynput>=1.7",
+    "kortex-api @ https://artifactory.kinovaapps.com/artifactory/generic-public/kortex/API/2.6.0/kortex_api-2.6.0.post3-py3-none-any.whl",
+]
+
+[tool.uv]
+override-dependencies = [
+    "protobuf==3.20.0",
 ]
 
 [tool.uv.sources]
