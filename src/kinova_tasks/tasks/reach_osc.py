@@ -31,8 +31,6 @@ from mjlab.utils.lab_api.math import (
     axis_angle_from_quat,
     compute_pose_error,
     matrix_from_quat,
-    quat_from_euler_xyz,
-    quat_mul,
     sample_uniform,
 )
 from mjlab.viewer import ViewerConfig
@@ -79,6 +77,13 @@ class ReachPoseCommand(CommandTerm):
         self.target_quat = torch.zeros(self.num_envs, 4, device=self.device)
         self.target_quat[:, 0] = 1.0  # identity quaternion
 
+        # FK lag buffer: stores the post-reset EE pose from the most recent resample.
+        # On the next resample for an env this becomes the new target, guaranteeing
+        # the target is always a pose the robot can physically reach.
+        home_local = torch.tensor(_HOME_POS, device=self.device)
+        self._fk_buf_pos = (home_local + env.scene.env_origins).clone()   # (num_envs, 3)
+        home_quat = torch.tensor(_HOME_QUAT, device=self.device)
+        self._fk_buf_quat = home_quat.unsqueeze(0).expand(self.num_envs, -1).clone()
 
     @property
     def command(self) -> torch.Tensor:
@@ -86,34 +91,20 @@ class ReachPoseCommand(CommandTerm):
         return torch.cat([self.target_pos, self.target_quat], dim=-1)
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        n = len(env_ids)
-        ori_r = self.cfg.ori_range
-        lo = torch.tensor(self.cfg.pos_lo, device=self.device)
-        hi = torch.tensor(self.cfg.pos_hi, device=self.device)
+        robot: Entity = self._env.scene[self.cfg.entity_name]
 
-        if self.cfg.target_pos_delta_max is not None:
-            home_pos = torch.tensor(_HOME_POS, device=self.device)
-            delta = sample_uniform(
-                torch.full((3,), -self.cfg.target_pos_delta_max, device=self.device),
-                torch.full((3,), self.cfg.target_pos_delta_max, device=self.device),
-                (n, 3),
-                device=self.device,
-            )
-            local_pos = torch.max(torch.min(home_pos + delta, hi), lo)
-        else:
-            local_pos = sample_uniform(lo, hi, (n, 3), device=self.device)
+        # site_pos_w is valid here: sim.forward() is called before command_manager.compute()
+        cur_pos = robot.data.site_pos_w[:, self._site_ids].squeeze(1)    # (num_envs, 3) world
+        cur_quat = robot.data.site_quat_w[:, self._site_ids].squeeze(1)  # (num_envs, 4)
 
-        self.target_pos[env_ids] = local_pos + self._env.scene.env_origins[env_ids]
+        # Serve the buffered FK pose from the PREVIOUS reset as this episode's target.
+        # The robot starts at a freshly randomised joint config, so target ≠ start.
+        self.target_pos[env_ids] = self._fk_buf_pos[env_ids]
+        self.target_quat[env_ids] = self._fk_buf_quat[env_ids]
 
-        home_quat = torch.tensor(_HOME_QUAT, device=self.device).unsqueeze(0).expand(n, -1)
-        euler = sample_uniform(
-            torch.tensor([ori_r[0]] * 3, device=self.device),
-            torch.tensor([ori_r[1]] * 3, device=self.device),
-            (n, 3),
-            device=self.device,
-        )
-        delta_quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
-        self.target_quat[env_ids] = quat_mul(home_quat, delta_quat)
+        # Store THIS episode's starting EE pose for use as the next episode's target.
+        self._fk_buf_pos[env_ids] = cur_pos[env_ids].clone()
+        self._fk_buf_quat[env_ids] = cur_quat[env_ids].clone()
 
     def _update_metrics(self) -> None:
         pass
