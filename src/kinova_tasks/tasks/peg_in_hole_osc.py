@@ -27,7 +27,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.sensor import BuiltinSensorCfg, ContactMatch, ContactSensorCfg, ObjRef
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
@@ -199,12 +199,16 @@ class peg_to_hole_reward:
         (0,4),(1,5),(2,6),(3,7),   # along Z
     ]
 
+    # Scale: meters per Newton (10 N → 0.1 m arrow)
+    _FT_FORCE_SCALE = 0.01
+
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
         self._env = env
         self._debug_vis_enabled: bool = True
         self._delta_pos_scale: float = env.action_manager._terms["osc_pose"].cfg.delta_pos_scale
         robot: Entity = env.scene["robot"]
         self._ee_site_ids = robot.find_sites("pinch_site")[0]
+        self._ft_site_ids = robot.find_sites("ft_site")[0]
 
     def __call__(
         self,
@@ -336,6 +340,25 @@ class peg_to_hole_reward:
                     label=f"{name}_{i}",
                 )
 
+            # --- Wrist force arrow ---
+            # Force sensor data is in ft_site local frame; rotate to world frame.
+            ft_pos  = robot.data.site_pos_w[i, self._ft_site_ids].squeeze(0)   # (3,)
+            ft_quat = robot.data.site_quat_w[i, self._ft_site_ids].squeeze(0)  # (4,)
+            ft_rotm = matrix_from_quat(ft_quat.unsqueeze(0)).squeeze(0)        # (3, 3)
+            force_local = env.scene["robot/wrist_force"].data[i]               # (3,) site frame
+            force_world = (ft_rotm @ force_local.unsqueeze(-1)).squeeze(-1)    # (3,) world frame
+            force_mag = torch.linalg.norm(force_world).item()
+            if force_mag > 0.1:  # skip negligible forces
+                ft_pos_np = ft_pos.cpu().numpy()
+                force_np  = force_world.cpu().numpy()
+                visualizer.add_arrow(
+                    start=ft_pos_np,
+                    end=ft_pos_np + force_np * self._FT_FORCE_SCALE,
+                    color=(0.0, 1.0, 1.0, 1.0),  # cyan
+                    width=0.006,
+                    label=f"wrist_force_{i}",
+                )
+
 
 GRIPPER_CLOSED_JOINT_POS = {
     "right_driver_joint": 0.503,
@@ -452,6 +475,82 @@ def peg_to_hole_error(
     return result
 
 
+def wrist_force_norm(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "robot/wrist_force",
+) -> torch.Tensor:
+    """L2 norm of the raw wrist force sensor reading (N), one scalar per env.
+
+    Note: this includes the gravitational load of the gripper+peg subtree
+    (~30 N at rest). Useful as a raw diagnostic metric; use wrist_force_tared
+    for policy observations.
+    """
+    from mjlab.sensor import BuiltinSensor
+    sensor = env.scene[sensor_name]
+    assert isinstance(sensor, BuiltinSensor)
+    return torch.linalg.norm(sensor.data, dim=-1)  # (num_envs,)
+
+
+class wrist_force_tared:
+    """Wrist force reading with per-episode gravity bias removed (tare).
+
+    At the first physics step of each episode the raw sensor reading is
+    recorded as the bias (static gravity load of the gripper+peg subtree,
+    ~30 N).  All subsequent steps subtract that bias, so the output is
+    near-zero at rest and gives the contact-induced force when the peg
+    touches the hole.
+
+    This mirrors what hardware teams do: they "zero" / "tare" the wrist
+    FT sensor after mounting the tool, before any contact.
+
+    Returns a (num_envs, 3) tensor in the ft_site local frame.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRlEnv) -> None:
+        self._env = env
+        self._bias = torch.zeros(env.num_envs, 3, device=env.device)
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str = "robot/wrist_force",
+    ) -> torch.Tensor:
+        from mjlab.sensor import BuiltinSensor
+        sensor = env.scene[sensor_name]
+        assert isinstance(sensor, BuiltinSensor)
+        force = sensor.data  # (N, 3) in ft_site frame
+
+        # On step 1 of each new episode record the gravity bias.
+        just_reset = env.episode_length_buf == 1
+        if just_reset.any():
+            self._bias[just_reset] = force[just_reset].detach().clone()
+
+        return force - self._bias  # (N, 3) contact forces only
+
+    def reset(self, env_ids: torch.Tensor) -> None:
+        self._bias[env_ids] = 0.0
+
+
+def wrist_force_norm_tared(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "robot/wrist_force",
+) -> torch.Tensor:
+    """L2 norm of the tared wrist force (N) — scalar per env, for metrics."""
+    from mjlab.sensor import BuiltinSensor
+    sensor = env.scene[sensor_name]
+    assert isinstance(sensor, BuiltinSensor)
+    force = sensor.data  # (N, 3)
+    # Re-use per-episode bias stored on the env if available.
+    bias = getattr(env, "_wrist_force_metric_bias", None)
+    if bias is None:
+        env._wrist_force_metric_bias = torch.zeros_like(force)
+        bias = env._wrist_force_metric_bias
+    just_reset = env.episode_length_buf == 1
+    if just_reset.any():
+        bias[just_reset] = force[just_reset].detach().clone()
+    return torch.linalg.norm(force - bias, dim=-1)  # (num_envs,)
+
+
 def reset_workspace_bounds(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -526,6 +625,27 @@ def reset_gripper_ctrl_closed(
 # ---------------------------------------------------------------------------
 
 
+def wrist_ft_sensors() -> tuple[BuiltinSensorCfg, BuiltinSensorCfg]:
+    """Return BuiltinSensorCfg pair for the wrist force/torque sensor.
+
+    Both sensors are attached to ft_site on bracelet_link (the tool flange site).
+    MuJoCo force/torque sensors at a site read cfrc_int for that body, which is
+    the constraint reaction force through joint_7 — equivalent to a physical
+    wrist FT sensor mounted between the arm flange and the gripper.
+    """
+    force_cfg = BuiltinSensorCfg(
+        name="wrist_force",
+        sensor_type="force",
+        obj=ObjRef(type="site", name="ft_site", entity="robot"),
+    )
+    torque_cfg = BuiltinSensorCfg(
+        name="wrist_torque",
+        sensor_type="torque",
+        obj=ObjRef(type="site", name="ft_site", entity="robot"),
+    )
+    return force_cfg, torque_cfg
+
+
 def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Kinova peg-in-hole with Operational Space Control (relative mode).
 
@@ -549,6 +669,19 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hole_site_names": ("hole_top", "hole_bottom"),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
+        # Wrist FT sensor: tared 3D force (N) and raw 3D torque (Nm) at the tool flange.
+        # wrist_force_tared subtracts the per-episode gravity bias so the reading
+        # is ~0 at rest and shows contact forces during insertion.
+        "wrist_force": ObservationTermCfg(
+            func=wrist_force_tared,
+            params={"sensor_name": "robot/wrist_force"},
+            noise=Unoise(n_min=-0.5, n_max=0.5),
+        ),
+        "wrist_torque": ObservationTermCfg(
+            func=mdp.builtin_sensor,
+            params={"sensor_name": "robot/wrist_torque"},
+            noise=Unoise(n_min=-0.05, n_max=0.05),
         ),
         "actions": ObservationTermCfg(func=mdp.last_action),
     }
@@ -610,6 +743,15 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
+        # Wrist FT (no noise for critic — full signal for value estimation)
+        "wrist_force": ObservationTermCfg(
+            func=wrist_force_tared,
+            params={"sensor_name": "robot/wrist_force"},
+        ),
+        "wrist_torque": ObservationTermCfg(
+            func=mdp.builtin_sensor,
+            params={"sensor_name": "robot/wrist_torque"},
+        ),
         "actions": ObservationTermCfg(func=mdp.last_action),
     }
 
@@ -626,7 +768,7 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             frame_name="pinch_site",
             frame_type="site",
             use_relative_mode=True,
-            delta_pos_scale=0.02,      # 2 cm per unit action
+            delta_pos_scale=0.1,      # 2 cm per unit action
             delta_ori_scale=0.02,      # ~1.1° per unit action
             position_weight=1.0,
             orientation_weight=1.0,
@@ -840,6 +982,16 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hole_site_names": ("hole_top", "hole_bottom"),
             },
         ),
+        # Raw wrist force norm (includes gravity ~30 N) — useful for sensor sanity check.
+        "wrist_force_norm_raw": MetricsTermCfg(
+            func=wrist_force_norm,
+            params={"sensor_name": "robot/wrist_force"},
+        ),
+        # Tared wrist force norm (gravity bias removed) — shows contact forces only.
+        "wrist_force_norm_tared": MetricsTermCfg(
+            func=wrist_force_norm_tared,
+            params={"sensor_name": "robot/wrist_force"},
+        ),
     }
 
     # --- Curriculum ---
@@ -881,7 +1033,7 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hole": get_hole_cfg(),
                 "workspace_bounds": get_workspace_bounds_cfg(),
             },
-            sensors=(ee_ground_collision_cfg,),
+            sensors=(ee_ground_collision_cfg, *wrist_ft_sensors()),
         ),
         observations=observations,
         actions=actions,

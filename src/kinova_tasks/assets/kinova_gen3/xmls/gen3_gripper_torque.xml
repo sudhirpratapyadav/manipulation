@@ -134,6 +134,8 @@
                     <camera name="wrist" pos="0 -0.05639 -0.058475" quat="0 0 0 1" fovy="41.83792730009236"
                       resolution="640 480"/>
                     <site name="pinch_site" pos="0 0 -0.211525" quat="0 1 0 0" type="sphere" size="0.01" rgba="1 0 0 0.5" group="1"/>
+                    <!-- Wrist FT sensor site: at the tool flange (between arm and gripper) -->
+                    <site name="ft_site" pos="0 0 -0.061525" quat="0 1 0 0" type="sphere" size="0.005" rgba="0 1 0 0.5" group="4"/>
 
                     <!-- End effector link (180 deg rotation around X to match URDF) -->
                     <body name="end_effector_link" pos="0 0 -0.061525" quat="0 1 0 0">
