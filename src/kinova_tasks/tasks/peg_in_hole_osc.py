@@ -46,35 +46,87 @@ if TYPE_CHECKING:
 # Custom reset events for peg-in-hole
 # ---------------------------------------------------------------------------
 
+_HOME_JOINT_POS = (
+    1.5707963268,   # joint_1  90°
+    0.5235987756,   # joint_2  30°
+    0.0,            # joint_3   0°
+    1.5707963268,   # joint_4  90°
+    0.0,            # joint_5   0°
+    1.0471975512,   # joint_6  60°
+    -1.5707963268,  # joint_7 -90°
+)
+_DEG_TO_RAD = 3.14159265358979 / 180.0
+
+
+def reset_joints_with_delta(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    entity_name: str = "robot",
+    joint_delta_deg: float = 5.0,
+) -> None:
+    """Reset arm joints (1-7) to home pose ± uniform delta, clipped to soft limits."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    robot: Entity = env.scene[entity_name]
+    soft_limits = robot.data.soft_joint_pos_limits  # (num_envs, num_joints, 2)
+
+    # Slice only arm joints (first 7)
+    lo = soft_limits[env_ids, :7, 0]
+    hi = soft_limits[env_ids, :7, 1]
+
+    n = len(env_ids)
+    delta_rad = joint_delta_deg * _DEG_TO_RAD
+    home = torch.tensor(_HOME_JOINT_POS, device=env.device).unsqueeze(0).expand(n, -1)
+    delta = sample_uniform(
+        torch.full((7,), -delta_rad, device=env.device),
+        torch.full((7,), delta_rad, device=env.device),
+        (n, 7),
+        device=env.device,
+    )
+    joint_pos = torch.clamp(home + delta, lo, hi)
+    joint_vel = torch.zeros_like(joint_pos)
+
+    # Write only to arm joints (first 7 joint ids)
+    arm_joint_ids = torch.arange(7, device=env.device)
+    robot.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=arm_joint_ids, env_ids=env_ids)
+
 
 def reset_peg_in_gripper(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     peg_entity_name: str = "peg",
-    pinch_pos_local: tuple[float, float, float] = (-0.024850, -0.482624, 0.174564),
+    robot_entity_name: str = "robot",
+    ee_site_name: str = "pinch_site",
 ) -> None:
-    """Place the peg at the known pinch_site position (between gripper fingers).
+    """Place the peg at the actual pinch_site position after joint randomization.
 
-    Uses the pre-computed FK position of pinch_site at the init joint config
-    rather than reading site_pos_w, which is stale during reset (no mj_forward
-    has been called yet after joint positions are written).
+    Calls sim.forward() to refresh FK before reading site_pos_w, since joint
+    positions written by earlier events are in qpos but derived quantities are
+    stale until mj_forward runs. This must run last in the reset event order
+    (after all robot joint resets) so FK reflects the final joint state.
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
+    # Flush all pending writes to sim and recompute FK for all envs
+    env.scene.write_data_to_sim()
+    env.sim.forward()
+
+    robot: Entity = env.scene[robot_entity_name]
     peg: Entity = env.scene[peg_entity_name]
+
+    # Read actual pinch_site position in world frame (now fresh after forward())
+    ee_site_id = robot.find_sites(ee_site_name)[0]
+    pos = robot.data.site_pos_w[env_ids, ee_site_id].squeeze(1).clone()  # (n, 3)
+
+    # Identity quaternion: peg stays world-upright regardless of EE orientation
     n = len(env_ids)
-
-    # Known pinch_site position (local frame) + env origin → world frame
-    pos = torch.tensor(pinch_pos_local, device=env.device).unsqueeze(0).expand(n, -1).clone()
-    pos = pos + env.scene.env_origins[env_ids]
-
-    # Identity quaternion (peg upright)
     quat = torch.zeros(n, 4, device=env.device)
     quat[:, 0] = 1.0  # w=1
 
     pose = torch.cat([pos, quat], dim=-1)  # (n, 7)
-    vel = torch.zeros(n, 6, device=env.device)
+    vel = torch.zeros(len(env_ids), 6, device=env.device)
 
     peg.write_root_link_pose_to_sim(pose, env_ids=env_ids)
     peg.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
@@ -539,6 +591,14 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Observations ---
     actor_terms = {
+        # Arm joint positions (7D)
+        "joint_pos": ObservationTermCfg(
+            func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
         # Peg start→hole top, peg end→hole bottom (6D)
         "peg_to_hole": ObservationTermCfg(
             func=peg_to_hole_sites_distance,
@@ -549,17 +609,6 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hole_site_names": ("hole_top", "hole_bottom"),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
-        ),
-        "actions": ObservationTermCfg(func=mdp.last_action),
-    }
-
-    critic_terms = {
-        "joint_vel": ObservationTermCfg(
-            func=mdp.joint_vel_rel,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
-            },
-            noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
         # EE to peg cylinder_start (3D)
         "ee_to_peg": ObservationTermCfg(
@@ -581,6 +630,18 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
+        "actions": ObservationTermCfg(func=mdp.last_action),
+    }
+
+    critic_terms = {
+        # Arm joint positions (7D)
+        "joint_pos": ObservationTermCfg(
+            func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
         # Peg start→hole top, peg end→hole bottom (6D)
         "peg_to_hole": ObservationTermCfg(
             func=peg_to_hole_sites_distance,
@@ -592,21 +653,23 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        # Hole top + bottom site positions relative to home (6D)
-        "hole_pos_home": ObservationTermCfg(
-            func=site_pos_relative_to_home,
+        # EE to peg cylinder_start (3D)
+        "ee_to_peg": ObservationTermCfg(
+            func=ee_to_sites_distance,
             params={
-                "entity_name": "hole",
-                "site_names": ("hole_top", "hole_bottom"),
+                "target_entity": "peg",
+                "target_site_names": ("cylinder_start",),
+                "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        # Peg start + end site positions relative to home (6D)
-        "peg_pos_home": ObservationTermCfg(
-            func=site_pos_relative_to_home,
+        # EE to hole top + bottom sites (6D)
+        "ee_to_hole": ObservationTermCfg(
+            func=ee_to_sites_distance,
             params={
-                "entity_name": "peg",
-                "site_names": ("cylinder_start", "cylinder_end"),
+                "target_entity": "hole",
+                "target_site_names": ("hole_top", "hole_bottom"),
+                "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
@@ -653,13 +716,9 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         ),
         "reset_robot_joints": EventTermCfg(
-            func=mdp.reset_joints_by_offset,
+            func=reset_joints_with_delta,
             mode="reset",
-            params={
-                "position_range": (0.0, 0.0),
-                "velocity_range": (0.0, 0.0),
-                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
-            },
+            params={"entity_name": "robot", "joint_delta_deg": 2.0},
         ),
         # Write all 8 gripper joints to consistent closed state
         "reset_gripper_joints": EventTermCfg(
@@ -699,13 +758,14 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "z_range": (0.02, 0.02),
             },
         ),
-        # Place peg at known pinch_site position
+        # Place peg at actual pinch_site position (reads FK after sim.forward())
         "reset_peg_in_gripper": EventTermCfg(
             func=reset_peg_in_gripper,
             mode="reset",
             params={
                 "peg_entity_name": "peg",
-                "pinch_pos_local": (-0.024850, -0.482624, 0.164564),
+                "robot_entity_name": "robot",
+                "ee_site_name": "pinch_site",
             },
         ),
         # Fingertip friction randomization (Robotiq 2F-85 pads)
@@ -764,25 +824,25 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=2.0,
             params={"std": 0.02},
         ),
-        "action_rate_l2": RewardTermCfg(
-            func=mdp.action_rate_l2,
-            weight=-0.01,
-        ),
-        "joint_pos_limits": RewardTermCfg(
-            func=mdp.joint_pos_limits,
-            weight=-10.0,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
-            },
-        ),
-        "joint_vel_hinge": RewardTermCfg(
-            func=manipulation_mdp.joint_velocity_hinge_penalty,
-            weight=-0.01,
-            params={
-                "max_vel": 0.5,
-                "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
-            },
-        ),
+        # "action_rate_l2": RewardTermCfg(
+        #     func=mdp.action_rate_l2,
+        #     weight=-0.01,
+        # ),
+        # "joint_pos_limits": RewardTermCfg(
+        #     func=mdp.joint_pos_limits,
+        #     weight=-10.0,
+        #     params={
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
+        #     },
+        # ),
+        # "joint_vel_hinge": RewardTermCfg(
+        #     func=manipulation_mdp.joint_velocity_hinge_penalty,
+        #     weight=-0.01,
+        #     params={
+        #         "max_vel": 0.5,
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
+        #     },
+        # ),
     }
 
     # --- Terminations ---
@@ -816,17 +876,17 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "angle_threshold": 2.618,  # 150 deg
             },
         ),
-        # "peg_out_of_bounds": TerminationTermCfg(
-        #     func=peg_out_of_bounds,
-        #     params={
-        #         "peg_entity": "peg",
-        #         "hole_entity": "hole",
-        #         "peg_site_name": "cylinder_end",
-        #         "home_pos": (-0.024850, -0.482624, 0.174564),
-        #         "workspace_half": (0.12, 0.12, 0.09),  # 12cm xy, 9cm z workspace
-        #         "hole_half": (0.015, 0.015, 0.07),
-        #     },
-        # ),
+        "peg_out_of_bounds": TerminationTermCfg(
+            func=peg_out_of_bounds,
+            params={
+                "peg_entity": "peg",
+                "hole_entity": "hole",
+                "peg_site_name": "cylinder_end",
+                "home_pos": (-0.024850, -0.482624, 0.174564),
+                "workspace_half": (0.12, 0.12, 0.09),  # 12cm xy, 9cm z workspace
+                "hole_half": (0.015, 0.015, 0.07),
+            },
+        ),
     }
 
     # --- Metrics ---
@@ -844,30 +904,30 @@ def kinova_peg_in_hole_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Curriculum ---
     curriculum = {
-        "action_rate_l2_weight": CurriculumTermCfg(
-            func=mdp.reward_curriculum,
-            params={
-                "reward_name": "action_rate_l2",
-                "stages": [
-                    {"step": 0, "weight": -0.01},
-                    {"step": 2400, "weight": -0.04},
-                    {"step": 4800, "weight": -0.07},
-                    {"step": 7200, "weight": -0.10},
-                ],
-            },
-        ),
-        "joint_vel_hinge_weight": CurriculumTermCfg(
-            func=mdp.reward_curriculum,
-            params={
-                "reward_name": "joint_vel_hinge",
-                "stages": [
-                    {"step": 0, "weight": -0.01},
-                    {"step": 2400, "weight": -0.04},
-                    {"step": 4800, "weight": -0.07},
-                    {"step": 7200, "weight": -0.10},
-                ],
-            },
-        ),
+        # "action_rate_l2_weight": CurriculumTermCfg(
+        #     func=mdp.reward_curriculum,
+        #     params={
+        #         "reward_name": "action_rate_l2",
+        #         "stages": [
+        #             {"step": 0, "weight": -0.01},
+        #             {"step": 2400, "weight": -0.04},
+        #             {"step": 4800, "weight": -0.07},
+        #             {"step": 7200, "weight": -0.10},
+        #         ],
+        #     },
+        # ),
+        # "joint_vel_hinge_weight": CurriculumTermCfg(
+        #     func=mdp.reward_curriculum,
+        #     params={
+        #         "reward_name": "joint_vel_hinge",
+        #         "stages": [
+        #             {"step": 0, "weight": -0.01},
+        #             {"step": 2400, "weight": -0.04},
+        #             {"step": 4800, "weight": -0.07},
+        #             {"step": 7200, "weight": -0.10},
+        #         ],
+        #     },
+        # ),
     }
 
     cfg = ManagerBasedRlEnvCfg(
