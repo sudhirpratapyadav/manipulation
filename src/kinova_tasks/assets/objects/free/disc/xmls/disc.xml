@@ -1,0 +1,11 @@
+<mujoco model="disc">
+  <worldbody>
+    <body name="disc" pos="0.4 0 0.3">
+      <freejoint name="disc_joint" />
+      <geom type="cylinder" name="disc_geom" size="0.02 0.02" mass="0.05" rgba="0.2 0.2 0.8 1.0" condim="3" friction="1 0.03 0.003" contype="1" conaffinity="1" solref="0.01 1" />
+      <site name="object_site" pos="0 0 0" size="0.01" rgba="1 0 0 1" />
+    </body>
+
+    
+  </worldbody>
+</mujoco>

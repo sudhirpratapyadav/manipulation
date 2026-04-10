@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<mujoco model="button">
+  <worldbody>
+    <body name="button_base" pos="0.65 0 0.5" mocap="true">
+      <geom type="box" name="button_body" size="0.1 0.1 0.01" pos="0 0 -0.02" condim="3" friction="1 0.03 0.003" rgba="0.5 0.5 0 0.5" contype="2" conaffinity="1" solref="0.01 1"/>
+      <!-- Base site positioned at handle location when joint = 0 -->
+      <site name="base_site" pos="0.0 0.0 0.1" size="0.01" rgba="0 0 1 0.3"/>
+      <body name="handle">
+        <joint name="button_slide" type="slide" axis="0 0 1" range="-0.05 0.0" limited="true" damping="5" stiffness="1000"/>
+        <!-- <geom type="box" name="button_panel" size="0.05 0.05 0.01" pos="0 0 0" condim="3" friction="1 0.03 0.003" rgba="0 1 0 0.2" contype="2" conaffinity="1" solref="0.01 1"/> -->
+        <geom type="box" name="handle" pos="0 0 0.1" size="0.03 0.03 0.005" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
+        <!-- Object site for observations (manipulation point) -->
+        <site name="object_site" pos="0 0 0.1" size="0.01 0.01 0.01" rgba="1 0 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

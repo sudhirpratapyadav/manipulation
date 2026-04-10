@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<mujoco model="cuboid">
+  <worldbody>
+    <body name="cuboid" pos="0.4 0 0.3">
+      <freejoint name="cuboid_joint"/>
+      <geom type="box" name="cuboid_geom" size="0.04 0.04 0.015" mass="0.05" rgba="0.8 0.2 0.2 1.0" condim="3" friction="1 0.03 0.003" contype="1" conaffinity="1" solref="0.01 1"/>
+      <!-- Object site for observations (manipulation point) -->
+      <site name="object_site" pos="0 0 0" size="0.01" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<mujoco model="door">
+  <worldbody>
+    <!-- Door assembly -->
+    <body name="door_base" pos="1.5 0 0.61" mocap="true">
+      <!-- Door frame/barrier -->
+      <geom
+        type="box"
+        name="door_body"
+        size="0.01 0.5 0.8"
+        pos="0.01 0 0.0"
+        condim="3"
+        friction="1 0.03 0.003"
+        rgba="0.5 0.5 0 0.5"
+        contype="2"
+        conaffinity="1"
+        solref="0.01 1"/>
+
+      <!-- Base site positioned at handle location when joint = 0 (closed) -->
+      <site name="base_site" pos="-0.04 0.25 0.0" size="0.01" rgba="0 0 1 0.3"/>
+
+      <!-- Door panel with hinge -->
+      <body name="handle" pos="0 0 0">
+        <joint
+          name="door_hinge"
+          type="hinge"
+          axis="0 0 1"
+          pos="0 -0.3 0"
+          range="0 90"
+          limited="true"
+          damping="0.1"/>
+
+        <!-- Door panel geom -->
+        <geom
+          type="box"
+          name="door_panel"
+          size="0.01 0.3 0.6"
+          pos="0 0 0"
+          condim="3"
+          friction="1 0.03 0.003"
+          rgba="0 1 0 0.2"
+          contype="2"
+          conaffinity="1"
+          solref="0.01 1"/>
+
+        <!-- Handle geom -->
+        <geom
+          type="box"
+          name="handle"
+          pos="-0.04 0.25 0"
+          size="0.01 0.01 0.08"
+          condim="3"
+          friction="1 0.03 0.003"
+          rgba="0 1 0 1"
+          contype="2"
+          conaffinity="1"
+          solref="0.01 1"/>
+
+        <!-- Object site for observations (manipulation point) -->
+        <site
+          name="object_site"
+          pos="-0.04 0.25 0"
+          size="0.01 0.01 0.01"
+          rgba="1 0 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

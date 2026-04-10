@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<mujoco model="drawer">
+  <worldbody>
+    <body name="drawer_base" pos="0.65 0 0.5" mocap="true">
+      <geom type="box" name="drawer_body" size="0.01 0.3 0.3" pos="0.02 0 0" condim="3" friction="1 0.03 0.003" rgba="0.5 0.5 0 0.5" contype="2" conaffinity="1" solref="0.01 1"/>
+      <!-- Base site positioned at handle location when joint = 0 (closed) -->
+      <site name="base_site" pos="-0.04 0.0 0.0" size="0.01" rgba="0 0 1 0.3"/>
+      <body name="handle">
+        <joint name="drawer_slide" type="slide" axis="1 0 0" range="-0.25 0" limited="true" damping="0.1"/>
+        <geom type="box" name="drawer_panel" size="0.01 0.2 0.1 " pos="-0.01 0 0" condim="3" friction="1 0.03 0.003" rgba="0 1 0 0.2" contype="2" conaffinity="1" solref="0.01 1"/>
+        <geom type="box" name="handle" pos="-0.04 0.0 0.0" size="0.01 0.08 0.01" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
+        <!-- Object site for observations (manipulation point) -->
+        <site name="object_site" pos="-0.04 0.0 0" size="0.01 0.01 0.01" rgba="1 0 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
