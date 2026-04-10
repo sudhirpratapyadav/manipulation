@@ -70,8 +70,10 @@ _HOME_POS = (-0.024850, -0.482624, 0.174564)
 _CUBE_SPAWN_LO = (-0.08, -0.55,  0.02)
 _CUBE_SPAWN_HI = ( 0.03, -0.42,  0.03)
 
-_GOAL_LO = (-0.30, -0.70,  0.05)
-_GOAL_HI = ( 0.30, -0.30,  0.40)
+_GOAL_LO = (-0.10, -0.60,  0.10)
+_GOAL_HI = ( 0.10, -0.40,  0.30)
+# _GOAL_LO = (-0.30, -0.70,  0.05)
+# _GOAL_HI = ( 0.30, -0.30,  0.40)
 
 # Gripper driver joint range [0, 0.8] (0=open, 0.8=closed)
 _GRIPPER_DRIVER_MAX = 0.8

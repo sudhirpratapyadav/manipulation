@@ -240,7 +240,7 @@ uv run play Mjlab-Peg-In-Hole-Osc-Kinova --num-envs 1 --viewer viser
 
 
 
-CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Pick-Cube-Osc-Kinova --viewer viser --num-envs 4 --agent zero
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Pick-Cube-Osc-Kinova --viewer viser --num-envs 4 --agent random
 
 
-env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Pick-Cube-Osc-Kinova --env.scene.num-envs 1024 --agent.max-iterations 5_00   --agent.wandb-project mjlab-kinova-tasks-torque --agent.experiment-name peg_in_hole_osc --video True --video-length 100 --video-interval 100
+env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Pick-Cube-Osc-Kinova --env.scene.num-envs 1024 --agent.max-iterations 5_00   --agent.wandb-project mjlab-kinova-tasks-osc --agent.experiment-name pick_cube_osc --video True --video-length 100 --video-interval 100

@@ -133,17 +133,15 @@
                     <geom class="collision" mesh="bracelet_with_vision_link"/>
                     <camera name="wrist" pos="0 -0.05639 -0.058475" quat="0 0 0 1" fovy="41.83792730009236"
                       resolution="640 480"/>
+                    <!-- <site name="pinch_site" pos="0 0 -0.12" quat="0 1 0 0" type="sphere" size="0.01" rgba="1 0 0 0.5" group="1"/> -->
                     <site name="pinch_site" pos="0 0 -0.211525" quat="0 1 0 0" type="sphere" size="0.01" rgba="1 0 0 0.5" group="1"/>
 
                     <!-- End effector link (180 deg rotation around X to match URDF) -->
                     <body name="end_effector_link" pos="0 0 -0.061525" quat="0 1 0 0">
 
                       <!-- Robotiq 2F-85 Gripper (matches mujoco_menagerie exactly) -->
-                      <body name="base_mount" pos="0 0 0.007" childclass="2f85">
-                        <geom class="gripper_visual" mesh="gripper_base_mount" material="black"/>
-                        <geom class="gripper_collision" mesh="gripper_base_mount"/>
-                        <body name="base" pos="0 0 0.0038" quat="1 0 0 -1">
-                          <inertial mass="0.777441" pos="0 -2.70394e-05 0.0354675" quat="1 -0.00152849 0 0"
+                        <body name="base" pos="0 0 0" quat="1 0 0 -1" childclass="2f85">
+                          <inertial mass="0.647" pos="0 -2.70394e-05 0.0354675" quat="1 -0.00152849 0 0"
                             diaginertia="0.000260285 0.000225381 0.000152708"/>
                           <geom class="gripper_visual" mesh="gripper_base" material="black"/>
                           <geom class="gripper_collision" mesh="gripper_base"/>
@@ -181,6 +179,7 @@
                                   diaginertia="4.73958e-07 3.64583e-07 1.23958e-07"/>
                                 <geom class="gripper_visual" mesh="gripper_pad"/>
                                 <body name="right_silicone_pad">
+                                  <inertial mass="0.0013" pos="0 -0.0058 0.0185" diaginertia="1e-7 1e-7 1e-7"/>
                                   <geom class="gripper_visual" mesh="gripper_silicone_pad" material="black"/>
                                 </body>
                               </body>
@@ -220,13 +219,13 @@
                                   diaginertia="4.73958e-07 3.64583e-07 1.23958e-07"/>
                                 <geom class="gripper_visual" mesh="gripper_pad"/>
                                 <body name="left_silicone_pad">
+                                  <inertial mass="0.0013" pos="0 -0.0058 0.0185" diaginertia="1e-7 1e-7 1e-7"/>
                                   <geom class="gripper_visual" mesh="gripper_silicone_pad" material="black"/>
                                 </body>
                               </body>
                             </body>
                           </body>
                         </body>
-                      </body>
                     </body>
                   </body>
                 </body>
