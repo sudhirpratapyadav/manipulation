@@ -1,6 +1,6 @@
 """Door object module."""
 
-from mjlab.asset_zoo.objects.articulated.door.door_constants import (
+from .door_constants import (
     DOOR_INIT_STATE,
     get_door_cfg,
     get_door_spec,
