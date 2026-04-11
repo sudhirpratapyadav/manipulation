@@ -579,9 +579,8 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """
 
     # --- Observations ---
-    # Total: 7 + 7 + 6 + 1 + 3 + 3 + 3 + 3 + 7 = 40D
+    # Total: 7 + 6 + 1 + 3 + 3 + 3 + 3 + 7 = 33D
     actor_terms = {
-        "joint_pos":     ObservationTermCfg(func=joint_pos,  noise=Unoise(n_min=-0.01, n_max=0.01)),
         "joint_vel":     ObservationTermCfg(func=joint_vel,  noise=Unoise(n_min=-1.5,  n_max=1.5)),
         "ee_pose":       ObservationTermCfg(func=ee_pose,    noise=Unoise(n_min=-0.01, n_max=0.01)),
         "gripper_state": ObservationTermCfg(

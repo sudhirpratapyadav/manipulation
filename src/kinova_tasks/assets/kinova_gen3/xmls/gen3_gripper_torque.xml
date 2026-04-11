@@ -8,7 +8,7 @@
       <geom type="mesh" contype="0" conaffinity="0" group="2" material="kinova_dark"/>
     </default>
     <default class="collision">
-      <geom type="mesh" group="3" contype="1" conaffinity="1"/>
+      <geom type="mesh" group="3" contype="3" conaffinity="1"/>
     </default>
     <!-- Arm joint classes: joints 1-4 (large, 39 Nm) vs 5-7 (small wrist, 9 Nm) -->
     <default class="arm_joint_large">
@@ -40,7 +40,7 @@
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
       <default class="gripper_collision">
-        <geom type="mesh" group="3"/>
+        <geom type="mesh" group="3" contype="3" conaffinity="1"/>
         <default class="pad_box1">
           <geom mass="0" type="box" pos="0 -0.0026 0.028125" size="0.011 0.004 0.009375" friction="3.0"
             solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>

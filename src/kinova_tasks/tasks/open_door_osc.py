@@ -51,9 +51,9 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-# Home joint positions (INIT_STATE_PEGINHOLE): arm rotated 90° at joint_1
+# Home joint positions for open-door task: joint_1 = 0° (arm facing forward)
 _HOME_JOINT_POS = (
-    1.5707963268,   # joint_1  90°
+    0.0,            # joint_1   0°
     0.5235987756,   # joint_2  30°
     0.0,            # joint_3   0°
     1.5707963268,   # joint_4  90°
@@ -62,9 +62,6 @@ _HOME_JOINT_POS = (
     -1.5707963268,  # joint_7 -90°
 )
 _DEG_TO_RAD = _math.pi / 180.0
-
-# FK position of pinch_site at home pose (local frame)
-_HOME_POS = (-0.024850, -0.482624, 0.174564)
 
 # Gripper driver joint range [0, 0.8] (0=open, 0.8=closed)
 _GRIPPER_DRIVER_MAX = 0.8
@@ -82,8 +79,13 @@ GRIPPER_OPEN_JOINT_POS = {
 GRIPPER_JOINT_NAMES = tuple(GRIPPER_OPEN_JOINT_POS.keys())
 
 # Door spawn range (local frame) — door_base mocap body position
-_DOOR_POS_LO = (-0.05, -0.60, 0.00)
-_DOOR_POS_HI = ( 0.05, -0.40, 0.00)
+# x: ±2 cm, y: 10 cm range (matching mjlab_old randomisation tightness)
+_DOOR_POS_LO = (0.7, -0.05, 0.45)
+_DOOR_POS_HI = ( 0.9, 0.15, 0.65)
+
+# Door initial hinge angle range at reset (radians): 0° – 80°
+_DOOR_INIT_ANGLE_LO =  0.0 * _DEG_TO_RAD
+_DOOR_INIT_ANGLE_HI = 10.0 * _DEG_TO_RAD
 
 # Door goal angle range (radians): 60° – 90°
 _DOOR_GOAL_LO = 60.0 * _DEG_TO_RAD
@@ -188,20 +190,48 @@ class DoorGoalCommand(CommandTerm):
         hx, hy, hz = _HINGE_OFFSET
         dx, dy, dz = _HANDLE_FROM_HINGE
 
+        # Door spawn range edges (blue rectangle, drawn once per env)
+        # Corners in local frame; z lifted slightly above floor for visibility
+        spawn_lo = np.array([_DOOR_POS_LO[0], _DOOR_POS_LO[1], 0.02], dtype=np.float32)
+        spawn_hi = np.array([_DOOR_POS_HI[0], _DOOR_POS_HI[1], 0.02], dtype=np.float32)
+        spawn_corners = np.array([
+            [spawn_lo[0], spawn_lo[1], spawn_lo[2]],
+            [spawn_hi[0], spawn_lo[1], spawn_lo[2]],
+            [spawn_lo[0], spawn_hi[1], spawn_lo[2]],
+            [spawn_hi[0], spawn_hi[1], spawn_lo[2]],
+        ], dtype=np.float32)
+        spawn_edges = [(0, 1), (0, 2), (1, 3), (2, 3)]
+
         for i in env_indices:
+            origin = self._env.scene.env_origins[i].cpu().numpy()
+
+            # Door spawn bounding box (blue)
+            for idx, (a, b) in enumerate(spawn_edges):
+                visualizer.add_cylinder(
+                    start=spawn_corners[a] + origin,
+                    end=spawn_corners[b] + origin,
+                    radius=0.004, color=(0.2, 0.5, 1.0, 0.5),
+                    label=f"door_spawn_edge_{i}_{idx}",
+                )
+
             door_pos = door.data.root_link_pos_w[i].cpu().numpy()
 
-            # Hinge pivot in world frame
-            hinge_w = door_pos + np.array([hx, hy, hz], dtype=np.float32)
+            # Current handle position (blue sphere, same as object_at_goal_reward vis)
+            handle_ids = door.find_sites("object_site")[0]
+            handle_pos_np = door.data.site_pos_w[i, handle_ids].squeeze(0).cpu().numpy()
+            visualizer.add_sphere(
+                center=handle_pos_np, radius=0.022,
+                color=(0.2, 0.5, 1.0, 0.6), label=f"handle_current_{i}",
+            )
 
-            # Target handle position (rotate handle-from-hinge by goal_angle)
+            # Goal handle position (orange sphere)
+            hinge_w = door_pos + np.array([hx, hy, hz], dtype=np.float32)
             goal_θ = float(self.goal_angle[i, 0].item())
             cos_θ, sin_θ = _math.cos(goal_θ), _math.sin(goal_θ)
             tx = dx * cos_θ - dy * sin_θ
             ty = dx * sin_θ + dy * cos_θ
             target_handle_w = hinge_w + np.array([tx, ty, dz], dtype=np.float32)
 
-            # Orange sphere at target handle position
             visualizer.add_sphere(
                 center=target_handle_w, radius=0.03,
                 color=(1.0, 0.5, 0.0, 0.4), label=f"door_goal_{i}",
@@ -211,12 +241,6 @@ class DoorGoalCommand(CommandTerm):
                 color=(1.0, 0.6, 0.0, 0.9), label=f"door_goal_dot_{i}",
             )
 
-            # Line from hinge to target handle
-            visualizer.add_cylinder(
-                start=hinge_w, end=target_handle_w,
-                radius=0.004, color=(1.0, 0.5, 0.0, 0.6),
-                label=f"door_goal_ray_{i}",
-            )
 
 
 @dataclass(kw_only=True)
@@ -245,7 +269,7 @@ def reset_joints_with_delta(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     entity_name: str = "robot",
-    joint_delta_deg: float = 2.0,
+    joint_delta_deg: float = 5.0,
 ) -> None:
     """Reset arm joints to home ± uniform delta (degrees)."""
     if env_ids is None:
@@ -301,9 +325,9 @@ def reset_door(
     x_range: tuple[float, float] = (_DOOR_POS_LO[0], _DOOR_POS_HI[0]),
     y_range: tuple[float, float] = (_DOOR_POS_LO[1], _DOOR_POS_HI[1]),
     z: float = _DOOR_POS_LO[2],
-    init_angle: float = 0.0,
+    init_angle_range: tuple[float, float] = (_DOOR_INIT_ANGLE_LO, _DOOR_INIT_ANGLE_HI),
 ) -> None:
-    """Reset door base position and hinge joint to closed (0 rad)."""
+    """Reset door base position and hinge joint to a randomly sampled initial angle."""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -321,21 +345,25 @@ def reset_door(
     pose = torch.cat([pos, quat], dim=-1)  # (N, 7)
     door.write_mocap_pose_to_sim(pose, env_ids=env_ids)
 
-    # Reset hinge joint to init_angle (default: 0 = closed)
-    jpos = torch.full((n, 1), init_angle, device=env.device)
+    # Sample hinge initial angle uniformly from init_angle_range
+    jpos = sample_uniform(
+        torch.tensor([init_angle_range[0]], device=env.device),
+        torch.tensor([init_angle_range[1]], device=env.device),
+        (n, 1),
+        device=env.device,
+    )
     jvel = torch.zeros(n, 1, device=env.device)
     door.write_joint_state_to_sim(jpos, jvel, env_ids=env_ids)
 
 
 # ---------------------------------------------------------------------------
 # Observation functions
+# Mirrors pick_cube_osc: joint_vel, ee_pose, gripper_state,
+#   ee_to_object, object_pos, object_to_goal, goal_pos, actions
+# The door handle (object_site) is treated as the manipulated "object".
+# Its position is read from site kinematics — MuJoCo propagates the hinge
+# joint through FK so door.data.site_pos_w already reflects the current angle.
 # ---------------------------------------------------------------------------
-
-
-def joint_pos(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tensor:
-    """Absolute arm joint positions (7D, rad)."""
-    robot: Entity = env.scene[entity_name]
-    return robot.data.joint_pos[:, :7]
 
 
 def joint_vel(env: ManagerBasedRlEnv, entity_name: str = "robot") -> torch.Tensor:
@@ -367,21 +395,25 @@ def gripper_state(
     return pos / _GRIPPER_DRIVER_MAX
 
 
-def ee_to_handle(
+def ee_to_object(
     env: ManagerBasedRlEnv,
     door_entity_name: str = "door",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
 ) -> torch.Tensor:
-    """Vector from EE (pinch_site) to door handle (object_site) in world frame (3D)."""
+    """Vector from EE (pinch_site) to door handle (object_site) in world frame (3D).
+
+    object_site lives on the articulated handle body, so its world position is
+    automatically updated by MuJoCo FK whenever the hinge angle changes.
+    """
     robot: Entity = env.scene[asset_cfg.name]
     ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
     door: Entity = env.scene[door_entity_name]
     handle_ids = door.find_sites("object_site")[0]
-    handle_pos = door.data.site_pos_w[:, handle_ids].squeeze(1)
-    return handle_pos - ee_pos
+    handle_pos_w = door.data.site_pos_w[:, handle_ids].squeeze(1)
+    return handle_pos_w - ee_pos
 
 
-def handle_pos(
+def object_pos(
     env: ManagerBasedRlEnv,
     door_entity_name: str = "door",
 ) -> torch.Tensor:
@@ -391,41 +423,67 @@ def handle_pos(
     return door.data.site_pos_w[:, handle_ids].squeeze(1) - env.scene.env_origins
 
 
-def door_joint_pos(
-    env: ManagerBasedRlEnv,
-    door_entity_name: str = "door",
-) -> torch.Tensor:
-    """Door hinge angle (1D, rad)."""
-    door: Entity = env.scene[door_entity_name]
-    return door.data.joint_pos  # (N, 1)
-
-
-def door_joint_vel(
-    env: ManagerBasedRlEnv,
-    door_entity_name: str = "door",
-) -> torch.Tensor:
-    """Door hinge angular velocity (1D, rad/s)."""
-    door: Entity = env.scene[door_entity_name]
-    return door.data.joint_vel  # (N, 1)
-
-
-def door_to_goal(
+def _goal_handle_pos_w(
     env: ManagerBasedRlEnv,
     door_entity_name: str = "door",
     command_name: str = "door_goal",
 ) -> torch.Tensor:
-    """Signed angle error: goal_angle - current_angle (1D, rad)."""
+    """Compute goal handle position in world frame via forward kinematics (N, 3).
+
+    Uses the hinge geometry from door.xml:
+      - Hinge pivot in door_base frame: _HINGE_OFFSET = (0, -0.3, 0)
+      - Handle offset from hinge at θ=0: _HANDLE_FROM_HINGE = (-0.04, 0.55, 0)
+    Rotation is around the z-axis (door_base has identity orientation after reset).
+    """
     door: Entity = env.scene[door_entity_name]
-    goal_angle = _get_door_goal_command(env, command_name).goal_angle
-    return goal_angle - door.data.joint_pos
+    door_base_w = door.data.root_link_pos_w  # (N, 3)
+
+    hx, hy, hz = _HINGE_OFFSET
+    dx, dy, dz = _HANDLE_FROM_HINGE
+
+    hinge_w = door_base_w + torch.tensor([hx, hy, hz], device=env.device)  # (N, 3)
+
+    goal_angle = _get_door_goal_command(env, command_name).goal_angle  # (N, 1)
+    cos_a = torch.cos(goal_angle)  # (N, 1)
+    sin_a = torch.sin(goal_angle)  # (N, 1)
+
+    # Rotate handle-from-hinge vector by goal_angle around z
+    tx = dx * cos_a - dy * sin_a          # (N, 1)
+    ty = dx * sin_a + dy * cos_a          # (N, 1)
+    tz = torch.full_like(tx, dz)          # (N, 1)
+
+    return hinge_w + torch.cat([tx, ty, tz], dim=-1)  # (N, 3)
+
+
+def goal_pos(
+    env: ManagerBasedRlEnv,
+    door_entity_name: str = "door",
+    command_name: str = "door_goal",
+) -> torch.Tensor:
+    """Goal handle position in local (robot-base) frame (3D)."""
+    return _goal_handle_pos_w(env, door_entity_name, command_name) - env.scene.env_origins
+
+
+def object_to_goal(
+    env: ManagerBasedRlEnv,
+    door_entity_name: str = "door",
+    command_name: str = "door_goal",
+) -> torch.Tensor:
+    """Vector from current handle position to goal handle position in world frame (3D)."""
+    door: Entity = env.scene[door_entity_name]
+    handle_ids = door.find_sites("object_site")[0]
+    handle_pos_w = door.data.site_pos_w[:, handle_ids].squeeze(1)
+    target_w = _goal_handle_pos_w(env, door_entity_name, command_name)
+    return target_w - handle_pos_w
 
 
 # ---------------------------------------------------------------------------
 # Reward functions
+# Mirrors pick_cube_osc: position-based Gaussians for both reach and goal phases.
 # ---------------------------------------------------------------------------
 
 
-def ee_to_handle_reward(
+def ee_to_object_reward(
     env: ManagerBasedRlEnv,
     std: float,
     door_entity_name: str = "door",
@@ -441,8 +499,11 @@ def ee_to_handle_reward(
     return torch.nan_to_num(torch.exp(-dist_sq / std**2), nan=0.0)
 
 
-class door_at_goal_reward:
-    """Gaussian reward for door angle proximity to goal (open phase).
+class object_at_goal_reward:
+    """Gaussian reward for handle proximity to goal position (open phase).
+
+    Goal position is the FK-computed world position of object_site at goal_angle.
+    This is a 3-D position error, identical in structure to cube_at_goal_reward.
 
     Debug vis draws:
       - Green sphere at current handle position
@@ -467,10 +528,11 @@ class door_at_goal_reward:
         command_name: str = "door_goal",
     ) -> torch.Tensor:
         door: Entity = env.scene[door_entity_name]
-        goal_angle = _get_door_goal_command(env, command_name).goal_angle
-        angle_err = goal_angle - door.data.joint_pos  # (N, 1)
-        err_sq = torch.sum(torch.square(angle_err), dim=-1)
-        return torch.nan_to_num(torch.exp(-err_sq / std**2), nan=0.0)
+        handle_ids = door.find_sites("object_site")[0]
+        handle_pos_w = door.data.site_pos_w[:, handle_ids].squeeze(1)
+        target_w = _goal_handle_pos_w(env, door_entity_name, command_name)
+        dist_sq = torch.sum(torch.square(target_w - handle_pos_w), dim=-1)
+        return torch.nan_to_num(torch.exp(-dist_sq / std**2), nan=0.0)
 
     def reset(self, env_ids: torch.Tensor) -> None:
         pass
@@ -493,7 +555,7 @@ class door_at_goal_reward:
             handle_pos_np = door.data.site_pos_w[i, handle_ids].squeeze(0).cpu().numpy()
             visualizer.add_sphere(
                 center=handle_pos_np, radius=0.022,
-                color=(0.2, 1.0, 0.3, 0.7), label=f"handle_pos_{i}",
+                color=(0.2, 1.0, 0.3, 0.7), label=f"object_pos_{i}",
             )
 
             # EE coordinate frame
@@ -513,18 +575,20 @@ class door_at_goal_reward:
 # ---------------------------------------------------------------------------
 
 
-def door_angle_error(
+def object_to_goal_error(
     env: ManagerBasedRlEnv,
     door_entity_name: str = "door",
     command_name: str = "door_goal",
 ) -> torch.Tensor:
-    """Absolute angle error |goal - current| (rad)."""
+    """Euclidean distance from current handle position to goal handle position."""
     door: Entity = env.scene[door_entity_name]
-    goal_angle = _get_door_goal_command(env, command_name).goal_angle
-    return torch.abs(goal_angle - door.data.joint_pos).squeeze(-1)
+    handle_ids = door.find_sites("object_site")[0]
+    handle_pos_w = door.data.site_pos_w[:, handle_ids].squeeze(1)
+    target_w = _goal_handle_pos_w(env, door_entity_name, command_name)
+    return torch.norm(target_w - handle_pos_w, dim=-1)
 
 
-def ee_to_handle_error(
+def ee_to_object_error(
     env: ManagerBasedRlEnv,
     door_entity_name: str = "door",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
@@ -570,9 +634,9 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """
 
     # --- Observations ---
-    # Total: 7 + 7 + 6 + 1 + 3 + 3 + 1 + 1 + 1 + 7 = 37D
+    # Mirrors pick_cube_osc. Handle = "object"; goal = FK-computed target handle pos.
+    # Total: 7 + 6 + 1 + 3 + 3 + 3 + 3 + 7 = 33D
     actor_terms = {
-        "joint_pos":     ObservationTermCfg(func=joint_pos,  noise=Unoise(n_min=-0.01, n_max=0.01)),
         "joint_vel":     ObservationTermCfg(func=joint_vel,  noise=Unoise(n_min=-1.5,  n_max=1.5)),
         "ee_pose":       ObservationTermCfg(func=ee_pose,    noise=Unoise(n_min=-0.01, n_max=0.01)),
         "gripper_state": ObservationTermCfg(
@@ -580,32 +644,27 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=("right_driver_joint",))},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "ee_to_handle": ObservationTermCfg(
-            func=ee_to_handle,
+        "ee_to_object": ObservationTermCfg(
+            func=ee_to_object,
             params={
                 "door_entity_name": "door",
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "handle_pos": ObservationTermCfg(
-            func=handle_pos,
+        "object_pos": ObservationTermCfg(
+            func=object_pos,
             params={"door_entity_name": "door"},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "door_joint_pos": ObservationTermCfg(
-            func=door_joint_pos,
-            params={"door_entity_name": "door"},
+        "object_to_goal": ObservationTermCfg(
+            func=object_to_goal,
+            params={"door_entity_name": "door", "command_name": "door_goal"},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "door_joint_vel": ObservationTermCfg(
-            func=door_joint_vel,
-            params={"door_entity_name": "door"},
-            noise=Unoise(n_min=-0.5, n_max=0.5),
-        ),
-        "door_to_goal": ObservationTermCfg(
-            func=door_to_goal,
-            params={"door_entity_name": "door"},
+        "goal_pos": ObservationTermCfg(
+            func=goal_pos,
+            params={"door_entity_name": "door", "command_name": "door_goal"},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "actions": ObservationTermCfg(func=mdp.last_action),
@@ -657,7 +716,7 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "reset_robot_joints": EventTermCfg(
             func=reset_joints_with_delta,
             mode="reset",
-            params={"entity_name": "robot", "joint_delta_deg": 2.0},
+            params={"entity_name": "robot", "joint_delta_deg": 5.0},
         ),
         "reset_gripper_open": EventTermCfg(
             func=reset_gripper_open,
@@ -675,7 +734,7 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "x_range": (_DOOR_POS_LO[0], _DOOR_POS_HI[0]),
                 "y_range": (_DOOR_POS_LO[1], _DOOR_POS_HI[1]),
                 "z": _DOOR_POS_LO[2],
-                "init_angle": 0.0,
+                "init_angle_range": (_DOOR_INIT_ANGLE_LO, _DOOR_INIT_ANGLE_HI),
             },
         ),
         # Fingertip friction randomization (Robotiq 2F-85 pads)
@@ -715,10 +774,11 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     # --- Rewards ---
+    # Mirrors pick_cube_osc: position-based Gaussians for reach and goal phases.
     rewards = {
         # Phase 1: EE reaches handle (Gaussian, std=0.15)
-        "reach_handle": RewardTermCfg(
-            func=ee_to_handle_reward,
+        "reach_object": RewardTermCfg(
+            func=ee_to_object_reward,
             weight=1.0,
             params={
                 "std": 0.15,
@@ -726,15 +786,15 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
-        # Phase 2: Door reaches target angle (Gaussian, std=0.2 rad ~11°)
-        "open_door": RewardTermCfg(
-            func=door_at_goal_reward,
+        # Phase 2: Handle reaches goal position (Gaussian, std=0.10 m)
+        "move_to_goal": RewardTermCfg(
+            func=object_at_goal_reward,
             weight=1.0,
-            params={"std": 0.20},
+            params={"std": 0.10},
         ),
-        # Tight angle bonus (Gaussian, std=0.05 rad ~3°)
-        "open_door_precise": RewardTermCfg(
-            func=door_at_goal_reward,
+        # Tight placement bonus (Gaussian, std=0.05 m ~5 cm)
+        "goal_precise": RewardTermCfg(
+            func=object_at_goal_reward,
             weight=2.0,
             params={"std": 0.05},
         ),
@@ -775,17 +835,16 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=manipulation_mdp.illegal_contact,
             params={"sensor_name": "ee_ground_collision"},
         ),
-        "door_out_of_range":   TerminationTermCfg(func=door_out_of_range),
     }
 
     # --- Metrics ---
     metrics = {
-        "door_angle_error": MetricsTermCfg(
-            func=door_angle_error,
-            params={"door_entity_name": "door"},
+        "object_to_goal_error": MetricsTermCfg(
+            func=object_to_goal_error,
+            params={"door_entity_name": "door", "command_name": "door_goal"},
         ),
-        "ee_to_handle_error": MetricsTermCfg(
-            func=ee_to_handle_error,
+        "ee_to_object_error": MetricsTermCfg(
+            func=ee_to_object_error,
             params={
                 "door_entity_name": "door",
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
@@ -825,7 +884,7 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         scene=SceneCfg(
             terrain=TerrainEntityCfg(terrain_type="plane"),
             num_envs=4096,
-            env_spacing=1.0,
+            env_spacing=2.5,
             entities={
                 "robot": get_kinova_robot_cfg_peginhole_osc(),
                 "door":  get_door_cfg(),
