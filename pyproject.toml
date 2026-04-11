@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-mjlab = { path = "/media/cvlab/EXTDRIVE/sudhir/continual_learning/mjlab", editable = true }
+mjlab = { path = "../mjlab", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.8.18,<0.9.0"]
