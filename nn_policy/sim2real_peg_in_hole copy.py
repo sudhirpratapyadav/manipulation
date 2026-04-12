@@ -96,12 +96,12 @@ PEG_CYLINDER_END_OFFSET   = np.array([0.0, 0.0, -0.07])   # in peg body frame [m
 # From reset_hole_position: x=-0.02, y=-0.5, z=0.02 in robot-local frame.
 # For a single-environment sim (no env_origins offset) this equals world frame.
 # Adjust HOLE_POS_WORLD to match the real-world hole placement.
-HOLE_POS_WORLD = np.array([-0.02, -0.5, -0.01])   # world-frame hole body origin
+HOLE_POS_WORLD = np.array([-0.02, -0.5, 0.02])   # world-frame hole body origin
 
 # On each reset, hole is randomized by sampling (dx, dy) uniformly from this range
 # and adding to HOLE_POS_WORLD. Z is kept fixed.
-HOLE_RAND_X = (-0.0, 0.0)   # metres, relative to HOLE_POS_WORLD
-HOLE_RAND_Y = (-0.0, 0.0)   # metres, relative to HOLE_POS_WORLD
+HOLE_RAND_X = (-0.05, 0.05)   # metres, relative to HOLE_POS_WORLD
+HOLE_RAND_Y = (-0.05, 0.05)   # metres, relative to HOLE_POS_WORLD
 
 # From hole.xml: hole_top at pos="0 0 0.07", hole_bottom at pos="0 0 0.02"
 # relative to the hole body — hole body is world-upright (identity quat on reset).
@@ -125,8 +125,8 @@ MAX_JOINT_TORQUE    = np.array([39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0])
 TAU_OFFSETS_DEFAULT = np.array([0.0,  0.0,  -0.5, 0.0,  0.0, 1.0, 0.0])
 
 # ── Action scales — must match peg_in_hole_osc.py ─────────────────────────────
-DELTA_POS_SCALE = 0.008   # metres per unit action
-DELTA_ORI_SCALE = 0.01   # rad per unit action
+DELTA_POS_SCALE = 0.01   # metres per unit action
+DELTA_ORI_SCALE = 0.02   # rad per unit action
 
 # ── Workspace bounds for OSC target clipping ──────────────────────────────────
 # Centred on home EE position (computed at startup from FK), ±WS_RADIUS per axis.

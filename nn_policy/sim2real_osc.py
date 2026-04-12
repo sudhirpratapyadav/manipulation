@@ -56,14 +56,15 @@ from mjlab.sim.sim import MujocoCfg, Simulation, SimulationCfg
 from viewer import ViserMujocoScene
 
 # ── Model ─────────────────────────────────────────────────────────────────────
-_TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_torque_no_gripper.xml"
+_TORQUE_XML_NO_GRIPPER = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_GRIPPER    = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_gripper_torque.xml"
 _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 
 # ── Sim initial state — matches HOME_DEG ──────────────────────────────────────
 DEMO_INIT_STATE = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.0),
     joint_pos={
-        "joint_1": 0.0,
+        "joint_1": 1.57079633,   # 90°
         "joint_2": 0.52359878,   # 30°
         "joint_3": 0.0,
         "joint_4": 1.57079633,   # 90°
@@ -75,28 +76,28 @@ DEMO_INIT_STATE = EntityCfg.InitialStateCfg(
 )
 
 # ── Default gains ─────────────────────────────────────────────────────────────
-KP_POS         =  50.0
-KD_POS         =   2.0
-KP_ORI         =  10.0
-KD_ORI         =   2.0
+KP_POS         =  5.0
+KD_POS         =   0.0
+KP_ORI         =  1.0
+KD_ORI         =   0.0
 POSTURE_KP     =  10.0
 POSTURE_KD     =   2.0
-POSTURE_WEIGHT =   0.01
+POSTURE_WEIGHT =   0.0
 
 MAX_JOINT_TORQUE = np.array([39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0])
 TAU_OFFSETS_DEFAULT = [0.0, 0.0, -0.5, 0.0, 0.0, 1.0, 0.0]
 
 # ── Timing ────────────────────────────────────────────────────────────────────
 PHYSICS_DT   = 0.002          # sim physics timestep (s)
-TARGET_HZ    = 50             # outer loop: target update from keyboard
+TARGET_HZ    = 100             # outer loop: target update from keyboard
 OSC_HZ       = 500            # inner loop: OSC torque compute + hardware send
 OSC_SUBSTEPS = OSC_HZ // TARGET_HZ   # inner iterations per outer tick (10)
 VIZ_HZ       = 30
 
-HOME_DEG = np.array([0.0, 30.0, 0.0, 90.0, 0.0, 60.0, -90.0])
+HOME_DEG = np.array([90.0, 30.0, 0.0, 90.0, 0.0, 60.0, -90.0])
 
 # ── Keyboard control ───────────────────────────────────────────────────────────
-DELTA_POS = 0.02           # metres per main-loop tick while key is held
+DELTA_POS = 0.005           # metres per main-loop tick while key is held
 DELTA_ROT = np.deg2rad(1.0) # radians per main-loop tick while key is held
 
 # 12 keys: ±X, ±Y, ±Z, ±Rx, ±Ry, ±Rz  (world frame)
@@ -272,12 +273,13 @@ def compute_osc_torques(robot, target_pos, target_quat_xyzw, q, dq, *, gains, po
 
 # ── Real process (separate process — no GIL sharing) ─────────────────────────
 
-def real_process_fn(ip,
+def real_process_fn(ip, torque_xml,
                     shm_q_real, shm_target_real, shm_gains, shm_real_hz,
+                    shm_gripper,
                     stop_event, reset_event, reset_done_event):
     outer_dt   = 1.0 / TARGET_HZ
     inner_dt   = 1.0 / OSC_HZ
-    robot      = PinocchioArm(str(_TORQUE_XML), ee_frame="pinch_site")
+    robot      = PinocchioArm(str(torque_xml), ee_frame="pinch_site")
     posture_target = kinova_deg_to_rad(HOME_DEG)
 
     hw = KinovaHardware(ip)
@@ -343,7 +345,7 @@ def real_process_fn(ip,
                 )
                 tau += TAU_OFFSETS_DEFAULT  # feedforward offsets to help compensate gravity/friction
 
-                state   = hw.send_torques(tau, pos_deg)
+                state   = hw.send_torques(tau, pos_deg, gripper_position=float(_np(shm_gripper)[0]))
                 pos_deg = state.positions_deg.copy()
                 vel_deg = state.velocities_deg.copy()
 
@@ -462,7 +464,10 @@ def viz_thread_fn(sim_view, real_view, mj_model_cpu, mj_data_sim, mj_data_real,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ip",         default="192.168.1.10")
+    parser.add_argument("--no-gripper", action="store_true")
     args = parser.parse_args()
+
+    _TORQUE_XML = _TORQUE_XML_NO_GRIPPER if args.no_gripper else _TORQUE_XML_GRIPPER
 
     # ── Shared memory ──────────────────────────────────────────────────────
     shm_q_real      = mp.Array(ctypes.c_double, 7)
@@ -471,10 +476,12 @@ def main():
     shm_gains       = mp.Array(ctypes.c_double, len(GAINS_KEYS))
     shm_real_hz     = mp.Array(ctypes.c_double, 1)
     shm_sim_hz      = mp.Array(ctypes.c_double, 1)
+    shm_gripper     = mp.Array(ctypes.c_double, 1)   # 0.0=open, 1.0=closed
 
     _np(shm_q_real)[:] = kinova_deg_to_rad(HOME_DEG)
     _np(shm_gains)[:]  = _pack_gains(KP_POS, KD_POS, KP_ORI, KD_ORI,
                                      POSTURE_KP, POSTURE_KD, POSTURE_WEIGHT)
+    _np(shm_gripper)[0] = 1.0   # start closed
 
     stop_event       = mp.Event()
     reset_event      = mp.Event()
@@ -483,8 +490,9 @@ def main():
     # ── Spawn real process BEFORE GPU init ─────────────────────────────────
     real_proc = mp.Process(
         target=real_process_fn,
-        args=(args.ip,
+        args=(args.ip, _TORQUE_XML,
               shm_q_real, shm_target_real, shm_gains, shm_real_hz,
+              shm_gripper,
               stop_event, reset_event, reset_done_event),
         daemon=True,
     )

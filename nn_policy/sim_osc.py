@@ -20,6 +20,7 @@ Run:
 
 from __future__ import annotations
 
+import argparse
 import ctypes
 import multiprocessing as mp
 import threading
@@ -42,7 +43,8 @@ from mjlab.sim.sim import MujocoCfg, Simulation, SimulationCfg
 from viewer import ViserMujocoScene
 
 # ── Model ─────────────────────────────────────────────────────────────────────
-_TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_NO_GRIPPER = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_GRIPPER    = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_gripper_torque.xml"
 _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 
 # ── Sim initial state — matches HOME_DEG ──────────────────────────────────────
@@ -324,6 +326,12 @@ def viz_thread_fn(sim_view, mj_model_cpu, mj_data_sim,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-gripper", action="store_true")
+    args = parser.parse_args()
+
+    _TORQUE_XML = _TORQUE_XML_NO_GRIPPER if args.no_gripper else _TORQUE_XML_GRIPPER
+
     # ── Shared memory ──────────────────────────────────────────────────────
     shm_target = mp.Array(ctypes.c_double, 7)   # pos(3) + quat_xyzw(4)
     shm_gains  = mp.Array(ctypes.c_double, len(GAINS_KEYS))

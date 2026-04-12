@@ -58,7 +58,8 @@ from pynput import keyboard as pynput_kb
 from viewer import ViserMujocoScene
 
 # ── Model ─────────────────────────────────────────────────────────────────────
-_TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_NO_GRIPPER = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_GRIPPER    = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_gripper_torque.xml"
 _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 
 # ── OSC gains — must match the training environment (reach_osc.py) ────────────
@@ -346,10 +347,10 @@ def policy_process_fn(checkpoint_path, device_str,
                       # action deltas for viz arrows
                       shm_action_sim, shm_action_real,
                       shm_policy_hz,
-                      policy_reset_event, stop_event):
+                      policy_reset_event, stop_event, torque_xml):
     """Single policy forward pass with batch=2 (sim + real) at TARGET_HZ."""
     policy_agent     = PolicyAgent(checkpoint_path, device=device_str)
-    robot            = PinocchioArm(str(_TORQUE_XML), ee_frame="pinch_site")
+    robot            = PinocchioArm(str(torque_xml), ee_frame="pinch_site")
     last_action_sim  = np.zeros(6, dtype=np.float32)
     last_action_real = np.zeros(6, dtype=np.float32)
     period           = 1.0 / TARGET_HZ
@@ -431,10 +432,10 @@ def real_process_fn(ip,
                     shm_q_real, shm_dq_real,
                     shm_osc_target_real, shm_gains,
                     shm_real_hz,
-                    stop_event, reset_event, reset_done_event):
+                    stop_event, reset_event, reset_done_event, torque_xml):
     """Connects to hardware, runs OSC at 500 Hz, publishes state back."""
     inner_dt       = 1.0 / OSC_HZ
-    robot          = PinocchioArm(str(_TORQUE_XML), ee_frame="pinch_site")
+    robot          = PinocchioArm(str(torque_xml), ee_frame="pinch_site")
     posture_target = kinova_deg_to_rad(HOME_DEG)
 
     hw = KinovaHardware(ip)
@@ -636,7 +637,10 @@ def main():
     parser.add_argument("--ip",         default="192.168.1.10")
     parser.add_argument("--sim-only",   action="store_true",
                         help="Skip real robot (sim only, no hardware required)")
+    parser.add_argument("--no-gripper", action="store_true")
     args = parser.parse_args()
+
+    _TORQUE_XML = _TORQUE_XML_NO_GRIPPER if args.no_gripper else _TORQUE_XML_GRIPPER
 
     policy_device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
@@ -697,7 +701,7 @@ def main():
             args=(args.ip,
                   shm_q_real, shm_dq_real,
                   shm_osc_target_real, shm_gains, shm_real_hz,
-                  stop_event, real_reset_event, real_reset_done),
+                  stop_event, real_reset_event, real_reset_done, _TORQUE_XML),
             daemon=True,
         )
         real_proc.start()
@@ -713,7 +717,7 @@ def main():
               shm_osc_target_sim, shm_osc_target_real,
               shm_action_sim, shm_action_real,
               shm_policy_hz,
-              policy_reset_event, stop_event),
+              policy_reset_event, stop_event, _TORQUE_XML),
         daemon=True,
     )
     policy_proc.start()

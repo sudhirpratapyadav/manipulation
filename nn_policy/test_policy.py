@@ -42,7 +42,8 @@ from policy import PolicyAgent
 from viewer import ViserMujocoScene
 
 # ── Model ─────────────────────────────────────────────────────────────────────
-_TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_NO_GRIPPER = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_no_gripper_torque.xml"
+_TORQUE_XML_GRIPPER    = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_gripper_torque.xml"
 _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 
 # ── OSC gains — must match the training environment (reach_osc.py) ────────────
@@ -293,10 +294,10 @@ def build_obs(q, dq, ee_pos, ee_rot, cmd_pos, cmd_quat_xyzw, last_action) -> np.
 def policy_process_fn(checkpoint_path, device_str,
                       shm_q, shm_dq, shm_command,
                       shm_osc_target, shm_action, shm_policy_hz,
-                      policy_reset_event, stop_event):
+                      policy_reset_event, stop_event, torque_xml):
     """Separate process: loads policy, runs inference at TARGET_HZ."""
     policy_agent = PolicyAgent(checkpoint_path, device=device_str)
-    robot        = PinocchioArm(str(_TORQUE_XML), ee_frame="pinch_site")
+    robot        = PinocchioArm(str(torque_xml), ee_frame="pinch_site")
     last_action  = np.zeros(6, dtype=np.float32)
     period       = 1.0 / TARGET_HZ
     iters        = 0
@@ -435,7 +436,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default="weights/model_4999.pt",
                         help="Path to RSL-RL PPO checkpoint (.pt)")
+    parser.add_argument("--no-gripper", action="store_true")
     args = parser.parse_args()
+
+    _TORQUE_XML = _TORQUE_XML_NO_GRIPPER if args.no_gripper else _TORQUE_XML_GRIPPER
 
     policy_device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
@@ -477,7 +481,7 @@ def main():
         args=(args.checkpoint, policy_device,
               shm_q, shm_dq, shm_command,
               shm_osc_target, shm_action, shm_policy_hz,
-              policy_reset_event, stop_event),
+              policy_reset_event, stop_event, _TORQUE_XML),
         daemon=True,
     )
     policy_proc.start()
