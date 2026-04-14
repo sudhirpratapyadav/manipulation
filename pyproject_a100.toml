@@ -1,0 +1,37 @@
+[project]
+name = "kinova-tasks"
+version = "0.1.0"
+description = "Kinova Gen3 manipulation tasks for mjlab"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "mjlab",
+    "pin>=3.9.0",
+    "pynput>=1.7",
+    "kortex-api @ https://artifactory.kinovaapps.com/artifactory/generic-public/kortex/API/2.6.0/kortex_api-2.6.0.post3-py3-none-any.whl",
+    "torch>=2.6.0,<2.7.0",
+]
+
+[tool.uv]
+override-dependencies = [
+    "protobuf==3.20.0",
+]
+
+[tool.uv.sources]
+mjlab = { path = "../mjlab", editable = true }
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[build-system]
+requires = ["uv_build>=0.8.18,<0.9.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+play-deploy = "kinova_tasks.play_deploy:main"
+play = "kinova_tasks.play_keyboard:main"
+
+[project.entry-points."mjlab.tasks"]
+kinova_tasks = "kinova_tasks"
