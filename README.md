@@ -250,3 +250,18 @@ CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Door-Osc-Kinova --viewer viser --n
 
 
 env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train Mjlab-Open-Door-Osc-Kinova --env.scene.num-envs 1024 --agent.max-iterations 5_000   --agent.wandb-project mjlab-kinova-tasks-osc --agent.experiment-name open_door_osc --video True --video-length 100 --video-interval 100
+
+
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Drawer-Osc-Kinova --viewer viser --num-envs 4 --agent random
+
+# load from wandb checkpoint
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Drawer-Osc-Kinova --viewer viser --num-envs 4 --wandb-run-path <entity>/<project>/<run-id>
+# load specific checkpoint
+CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Drawer-Osc-Kinova --viewer viser --num-envs 4 --wandb-run-path <entity>/<project>/<run-id> --wandb-checkpoint-name model_4000.pt
+
+# example (open_door_osc run)
+# note: set WANDB_API_KEY explicitly to avoid .netrc credentials overriding
+WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Door-Osc-Kinova --viewer viser --num-envs 4 --wandb-run-path sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/5pro663s
+
+
+WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Drawer-Osc-Kinova --viewer viser --num-envs 4 --wandb-run-path sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/5pro663s
