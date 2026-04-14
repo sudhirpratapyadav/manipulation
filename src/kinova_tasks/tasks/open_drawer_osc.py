@@ -97,7 +97,7 @@ _DRAWER_GOAL_HI = -0.15  # partially open
 #   handle body slides along x-axis (axis="1 0 0") within drawer_base.
 #   At slide joint value q, object_site world pos =
 #       drawer_base_pos_w + (q + _HANDLE_OFFSET_X, 0, 0)
-_HANDLE_OFFSET_X = -0.04
+_HANDLE_OFFSET_X = -0.044
 _HANDLE_OFFSET_Y =  0.0
 _HANDLE_OFFSET_Z =  0.0
 
