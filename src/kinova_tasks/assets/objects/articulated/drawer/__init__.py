@@ -1,6 +1,6 @@
 """Drawer object module."""
 
-from mjlab.asset_zoo.objects.articulated.drawer.drawer_constants import (
+from .drawer_constants import (
     DRAWER_INIT_STATE,
     get_drawer_cfg,
     get_drawer_spec,

@@ -34,6 +34,10 @@ from kinova_tasks.tasks.open_door_osc import (
     kinova_open_door_osc_env_cfg,
     kinova_open_door_osc_ppo_cfg,
 )
+from kinova_tasks.tasks.open_drawer_osc import (
+    kinova_open_drawer_osc_env_cfg,
+    kinova_open_drawer_osc_ppo_cfg,
+)
 
 # Joint-space lift task
 register_mjlab_task(
@@ -97,4 +101,12 @@ register_mjlab_task(
     env_cfg=kinova_open_door_osc_env_cfg(),
     play_env_cfg=kinova_open_door_osc_env_cfg(play=True),
     rl_cfg=kinova_open_door_osc_ppo_cfg(),
+)
+
+# Open drawer task (OSC torque control + gripper)
+register_mjlab_task(
+    task_id="Mjlab-Open-Drawer-Osc-Kinova",
+    env_cfg=kinova_open_drawer_osc_env_cfg(),
+    play_env_cfg=kinova_open_drawer_osc_env_cfg(play=True),
+    rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
 )
