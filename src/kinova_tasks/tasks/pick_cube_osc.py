@@ -34,7 +34,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.sensor import ContactMatch, ContactSensor, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.terrains import TerrainEntityCfg
@@ -67,13 +67,15 @@ _DEG_TO_RAD = _math.pi / 180.0
 _HOME_POS = (-0.024850, -0.482624, 0.174564)
 
 # Spawn / goal bounding boxes (local frame, used in events + debug vis)
-_CUBE_SPAWN_LO = (-0.3, -0.7,  0.02)
-_CUBE_SPAWN_HI = ( 0.3, -0.3,  0.03)
+_CUBE_SPAWN_LO = (-0.1, -0.6,  0.02)
+_CUBE_SPAWN_HI = ( 0.1, -0.4,  0.03)
+# _CUBE_SPAWN_LO = (-0.3, -0.7,  0.02)
+# _CUBE_SPAWN_HI = ( 0.3, -0.3,  0.03)
 
-#_GOAL_LO = (-0.10, -0.60,  0.10)
-#_GOAL_HI = ( 0.10, -0.40,  0.30)
-_GOAL_LO = (-0.30, -0.70,  0.05)
-_GOAL_HI = ( 0.30, -0.30,  0.40)
+_GOAL_LO = (-0.10, -0.60,  0.10)
+_GOAL_HI = ( 0.10, -0.40,  0.30)
+# _GOAL_LO = (-0.30, -0.70,  0.05)
+# _GOAL_HI = ( 0.30, -0.30,  0.40)
 
 # Gripper driver joint range [0, 0.8] (0=open, 0.8=closed)
 _GRIPPER_DRIVER_MAX = 0.8
@@ -541,6 +543,94 @@ def ee_to_cube_error(
 
 
 # ---------------------------------------------------------------------------
+# Contact-force penalty
+# ---------------------------------------------------------------------------
+
+
+class ee_ground_force_penalty:
+    """Penalize EE-to-ground contact force magnitude and draw debug arrows.
+
+    The sensor must be configured with fields that include ``"force"`` and
+    ``"pos"`` (and ``"normal"``, ``"tangent"`` for ``global_frame=True``).
+    ``global_frame=True`` on the sensor puts the force vector in world
+    coordinates so the arrow direction is correct in the viser overlay.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+        self._env = env
+        self._sensor_name: str = cfg.params.get("sensor_name", "ee_ground_collision")
+        self._debug_vis_enabled: bool = True  # toggled by viser checkbox
+
+    def reset(self, env_ids: torch.Tensor) -> None:
+        pass  # required for reward_manager to register this as a class term
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str = "ee_ground_collision",
+        scale: float = 10.0,
+    ) -> torch.Tensor:
+        """Exponential penalty for EE-ground contact force.
+
+        Returns exp(‖f‖ / scale) - 1, which is ~0 for forces well below
+        ``scale`` (N) and grows exponentially above it.  Use with a negative
+        weight in rewards.
+        """
+        sensor: ContactSensor = env.scene[sensor_name]
+        force = sensor.data.force  # [B, N, 3]
+        if force is None:
+            return torch.zeros(env.num_envs, device=env.device)
+        f_mag = torch.norm(force, dim=-1)           # [B, N]
+        f_mag = f_mag.max(dim=-1).values            # [B]  — worst slot
+        return torch.exp(f_mag / scale) - 1.0       # [B]
+
+    def debug_vis(self, visualizer: DebugVisualizer) -> None:
+        """Draw a force arrow at each active EE-ground contact point."""
+        if not self._debug_vis_enabled:
+            return
+        env = self._env
+        sensor: ContactSensor = env.scene[self._sensor_name]
+        data = sensor.data
+
+        if data.force is None or data.pos is None or data.found is None:
+            return
+
+        # found: [B, N], force: [B, N, 3], pos: [B, N, 3]  (global frame)
+        found = data.found  # [B, N]  — already 2D, no squeeze
+        force = data.force  # [B, N, 3]
+        pos   = data.pos    # [B, N, 3]
+
+        # Ensure 2D regardless of whether found is [B] or [B, N]
+        if found.dim() == 1:
+            found = found.unsqueeze(-1)
+            force = force.unsqueeze(1)
+            pos   = pos.unsqueeze(1)
+
+        scale = 0.002  # metres per Newton — tune to taste
+
+        for i in visualizer.get_env_indices(env.num_envs):
+            for slot in range(found.shape[1]):
+                if found[i, slot].item() <= 0:
+                    continue
+                f_vec = force[i, slot]          # [3]
+                f_mag = torch.norm(f_vec).item()
+                if f_mag < 0.1:                 # skip near-zero noise
+                    continue
+                start = pos[i, slot]            # [3]
+                end   = start + f_vec * scale
+                # colour: green → red by magnitude (capped at 100 N)
+                t = min(f_mag / 100.0, 1.0)
+                color = (t, 1.0 - t, 0.0, 0.9)
+                visualizer.add_arrow(
+                    start=start,
+                    end=end,
+                    color=color,
+                    width=0.008,
+                    label=f"EE-gnd {f_mag:.1f}N",
+                )
+
+
+# ---------------------------------------------------------------------------
 # Termination functions
 # ---------------------------------------------------------------------------
 
@@ -753,6 +843,13 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
             },
         ),
+        # Exponential EE-ground force penalty; ramped up by curriculum below.
+        # scale (N): forces << scale score ~0; forces >> scale shoot up fast.
+        "ee_ground_force": RewardTermCfg(
+            func=ee_ground_force_penalty,
+            weight=0.0,
+            params={"sensor_name": "ee_ground_collision", "scale": 10.0},
+        ),
     }
 
     # --- Terminations ---
@@ -764,18 +861,19 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             entity="robot",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("found",),
-        reduce="none",
+        fields=("found", "force", "pos", "normal", "tangent"),
+        reduce="maxforce",      # pick strongest contact per slot
         num_slots=1,
+        global_frame=True,      # rotate force into world frame for debug arrows
     )
 
     terminations = {
         "time_out":         TerminationTermCfg(func=mdp.time_out, time_out=True),
         "nan_detection":    TerminationTermCfg(func=mdp.nan_detection, time_out=False),
-        "ee_ground_collision": TerminationTermCfg(
-            func=manipulation_mdp.illegal_contact,
-            params={"sensor_name": "ee_ground_collision"},
-        ),
+        # "ee_ground_collision": TerminationTermCfg(
+        #     func=manipulation_mdp.illegal_contact,
+        #     params={"sensor_name": "ee_ground_collision"},
+        # ),
         "cube_out_of_bounds": TerminationTermCfg(
             func=cube_out_of_bounds,
             params={
@@ -824,6 +922,22 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     {"step": 2400, "weight": -0.04},
                     {"step": 4800, "weight": -0.07},
                     {"step": 7200, "weight": -0.10},
+                ],
+            },
+        ),
+        # EE-ground force penalty: 0 for first 100 iters, then ramp every 50 iters
+        # 1 iter = 24 steps (num_steps_per_env), so 100 iters = 2400, 50 iters = 1200
+        "ee_ground_force_weight": CurriculumTermCfg(
+            func=mdp.reward_curriculum,
+            params={
+                "reward_name": "ee_ground_force",
+                "stages": [
+                    {"step":    0, "weight":  0.000},  # no penalty (warmup)
+                    {"step": 2400, "weight": -0.010},  # 100 iters
+                    {"step": 3600, "weight": -0.025},  # 150 iters
+                    {"step": 4800, "weight": -0.050},  # 200 iters
+                    {"step": 6000, "weight": -0.075},  # 250 iters
+                    {"step": 7200, "weight": -0.100},  # 300 iters (max)
                 ],
             },
         ),
