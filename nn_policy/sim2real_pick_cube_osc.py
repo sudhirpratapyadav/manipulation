@@ -3,11 +3,10 @@
 An NN policy (RSL-RL PPO checkpoint) drives both sim and real arm simultaneously.
 A single policy forward pass with batch=2 produces actions for both at once.
 
-Policy observations (40-D, same as pick_cube_osc training checkpoint):
-    joint_pos(7) + joint_vel(7) + ee_pose(6) + gripper_state(1) + ee_to_cube(3) +
+Policy observations (33-D, same as pick_cube_osc training checkpoint):
+    joint_vel(7) + ee_pose(6) + gripper_state(1) + ee_to_cube(3) +
     cube_pos(3) + cube_to_goal(3) + goal_pos(3) + last_action(7)
 
-  joint_pos      : absolute arm joint positions [rad]
   joint_vel      : arm joint velocities [rad/s]
   ee_pose        : [ee_pos(3), ee_axis_angle(3)] in robot-local frame
   gripper_state  : right_driver_joint / 0.8  (normalized to [0=open, 1=closed])
@@ -317,10 +316,9 @@ def build_obs(
     goal_pos_world: np.ndarray,
     last_action: np.ndarray,
 ) -> np.ndarray:
-    """Build 40-D observation matching the pick_cube_osc training checkpoint.
+    """Build 33-D observation matching the pick_cube_osc training checkpoint.
 
-    Layout (40D):
-        joint_pos(7)      — absolute arm joint positions [rad]
+    Layout (33D):
         joint_vel(7)      — arm joint velocities [rad/s]
         ee_pose(6)        — [ee_pos_local(3), ee_axis_angle(3)]
         gripper_state(1)  — right_driver_joint / 0.8
@@ -331,7 +329,7 @@ def build_obs(
         last_action(7)
 
     Args:
-        q                 : (7,) arm joint positions [rad]
+        q                 : (7,) arm joint positions [rad]  (used for FK only, not in obs)
         dq                : (7,) arm joint velocities [rad/s]
         ee_pos            : (3,) EE world position [m]
         ee_rot            : (3,3) EE world rotation matrix
@@ -343,7 +341,6 @@ def build_obs(
     # ee_pose: local frame = world frame for single env (env_origin = 0)
     ee_axis_angle = Rotation.from_matrix(ee_rot).as_rotvec()
 
-    joint_pos_obs    = q.astype(np.float32)                           # (7,)
     joint_vel_obs    = dq.astype(np.float32)                          # (7,)
     ee_pose_obs      = np.concatenate([ee_pos, ee_axis_angle])        # (6,)
     gripper_obs      = np.array([gripper_driver_pos / _GRIPPER_DRIVER_MAX], dtype=np.float32)  # (1,)
@@ -353,7 +350,6 @@ def build_obs(
     goal_pos_obs     = goal_pos_world.copy()                          # (3,) local = world
 
     return np.concatenate([
-        joint_pos_obs,    # 7
         joint_vel_obs,    # 7
         ee_pose_obs,      # 6
         gripper_obs,      # 1
@@ -362,7 +358,7 @@ def build_obs(
         cube_to_goal_obs, # 3
         goal_pos_obs,     # 3
         last_action,      # 7
-    ]).astype(np.float32)  # total: 40
+    ]).astype(np.float32)  # total: 33
 
 
 def _gripper_action_to_ctrl(action_1d: float) -> float:
@@ -393,9 +389,9 @@ def policy_process_fn(checkpoint_path, device_str, home_rad_arr,
                       policy_reset_event, reset_in_progress, stop_event):
     """Single policy forward pass with batch=2 (sim + real) at TARGET_HZ."""
     policy_agent     = PolicyAgent(checkpoint_path, device=device_str)
-    if policy_agent.obs_dim != 40:
+    if policy_agent.obs_dim != 33:
         raise ValueError(
-            f"Checkpoint obs_dim={policy_agent.obs_dim} but pick_cube_osc expects 40. "
+            f"Checkpoint obs_dim={policy_agent.obs_dim} but pick_cube_osc expects 33. "
             f"Did you pass the wrong checkpoint?"
         )
     if policy_agent.action_dim != 7:
