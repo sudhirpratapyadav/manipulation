@@ -120,37 +120,38 @@ class GripperCtrlActionCfg(ActionTermCfg):
 
 
 class GripperCtrlAction(ActionTerm):
+    """Maps a 1D policy action to the Robotiq fingers_actuator ctrl signal."""
+
     cfg: GripperCtrlActionCfg
 
     def __init__(self, cfg: GripperCtrlActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        robot: Entity = env.scene[cfg.entity_name]
-        self._actuator_ids = robot.find_actuators(cfg.actuator_name)[0]
+        # Resolve actuator IDs the same way SceneEntityCfg does in event functions,
+        # so write_ctrl receives proper local ctrl indices (not raw find_actuators output).
+        self._gripper_asset_cfg = SceneEntityCfg(
+            cfg.entity_name, actuator_names=(cfg.actuator_name,)
+        )
+        self._gripper_asset_cfg.resolve(env.scene)
+        self._raw_actions = torch.zeros(env.num_envs, 1, device=env.device)
 
     @property
     def action_dim(self) -> int:
         return 1
 
     @property
-    def raw_actions(self) -> torch.Tensor:
+    def raw_action(self) -> torch.Tensor:
         return self._raw_actions
 
-    @property
-    def processed_actions(self) -> torch.Tensor:
-        return self._processed_actions
-
     def process_actions(self, actions: torch.Tensor) -> None:
-        self._raw_actions = actions
-        squashed = torch.tanh(actions)
-        self._processed_actions = (squashed + 1.0) * 0.5 * (
-            self.cfg.ctrl_max - self.cfg.ctrl_min
-        ) + self.cfg.ctrl_min
+        self._raw_actions = actions.clone()
 
     def apply_actions(self) -> None:
         robot: Entity = self._env.scene[self.cfg.entity_name]
-        robot.set_joint_effort_target(
-            self._processed_actions, joint_ids=self._actuator_ids
-        )
+        ctrl_mid = (self.cfg.ctrl_min + self.cfg.ctrl_max) * 0.5
+        ctrl_half = (self.cfg.ctrl_max - self.cfg.ctrl_min) * 0.5
+        # Map [-1, 1] → [ctrl_min, ctrl_max]
+        ctrl = ctrl_mid + self._raw_actions.clamp(-1.0, 1.0) * ctrl_half
+        robot.data.write_ctrl(ctrl, ctrl_ids=self._gripper_asset_cfg.actuator_ids)
 
 
 # ---------------------------------------------------------------------------
