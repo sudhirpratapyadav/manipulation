@@ -594,6 +594,24 @@ def ee_to_object_error(
     return torch.norm(handle_pos_w - ee_pos, dim=-1)
 
 
+# success_rate: per-step indicator that handle is within tolerance of goal.
+# MetricsManager averages across the episode, so the logged value is the
+# *fraction of steps* the handle stayed within tolerance — i.e. a "dwell"
+# success. Strictly harder than terminal success (a policy that briefly
+# touches the band but drifts off scores below 1.0). Mjlab's MetricsTermCfg
+# does not currently expose a `reduce="last"` mode; using the dwell
+# interpretation is the closest faithful Phase-0 metric without patching
+# mjlab.
+def success_rate(
+    env: ManagerBasedRlEnv,
+    threshold: float = 0.02,
+    drawer_entity_name: str = "drawer",
+    command_name: str = "drawer_goal",
+) -> torch.Tensor:
+    err = object_to_goal_error(env, drawer_entity_name, command_name)
+    return (err < threshold).float()
+
+
 # ---------------------------------------------------------------------------
 # Termination functions
 # ---------------------------------------------------------------------------
@@ -841,6 +859,16 @@ def kinova_open_drawer_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
+        # Phase 0 primary metric — see comment on success_rate(): dwell-fraction
+        # of steps within 2 cm of the goal handle position.
+        "success_rate": MetricsTermCfg(
+            func=success_rate,
+            params={
+                "threshold": 0.02,
+                "drawer_entity_name": "drawer",
+                "command_name": "drawer_goal",
+            },
+        ),
     }
 
     # --- Curriculum ---
@@ -923,6 +951,22 @@ def kinova_open_drawer_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.observations["actor"].enable_corruption = False
         cfg.curriculum = {}
 
+    return cfg
+
+
+def kinova_open_drawer_osc_eval_env_cfg() -> ManagerBasedRlEnvCfg:
+    """OOD-evaluation variant of the open-drawer OSC task.
+
+    Phase 0: skeleton only. Inherits the training config but disables
+    observation corruption and curriculum so eval numbers are deterministic.
+    Episode length is kept at the training value (10 s) so success_rate is
+    comparable to training-time numbers. Sweep CLI overrides (drawer
+    friction, base mass, init slide, etc.) will be wired up in a later
+    phase alongside the sweep harness.
+    """
+    cfg = kinova_open_drawer_osc_env_cfg(play=False)
+    cfg.observations["actor"].enable_corruption = False
+    cfg.curriculum = {}
     return cfg
 
 

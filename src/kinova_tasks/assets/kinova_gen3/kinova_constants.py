@@ -133,9 +133,11 @@ INIT_STATE_PEGINHOLE = EntityCfg.InitialStateCfg(
 # Articulation config.
 ##
 
-# XmlPositionActuatorCfg automatically finds and uses actuators defined in the XML
+# gen3_gripper.xml declares the 7 arm <position> actuators; fingers_actuator
+# is a <general> tendon actuator and is intentionally not part of articulation.
+# (target_names_expr matches joint names, so the fingers tendon is filtered out.)
 KINOVA_ACTUATORS = XmlPositionActuatorCfg(
-    target_names_expr=(".*",),  # Match all joints (arm + gripper)
+    target_names_expr=(".*",),  # Match all joints (arm + gripper finger joints)
 )
 
 KINOVA_GRIPPER_ARTICULATION = EntityArticulationInfoCfg(
@@ -224,7 +226,7 @@ def get_gripper_torque_spec() -> mujoco.MjSpec:
     return spec
 
 
-# XmlMotorActuatorCfg keeps the native <motor> torque actuators from the XML
+# gen3_no_gripper_torque.xml declares the 7 arm joints as <motor> torque actuators.
 KINOVA_NO_GRIPPER_ACTUATORS = XmlMotorActuatorCfg(
     target_names_expr=("joint_.*",),
 )
@@ -252,8 +254,8 @@ def get_kinova_no_gripper_robot_cfg() -> EntityCfg:
 # Gripper arm with torque actuators (for OSC + gripper tasks).
 ##
 
-# XmlMotorActuatorCfg captures the 7 arm <motor> actuators for torque control.
-# fingers_actuator is a tendon-based general actuator controlled separately
+# gen3_gripper_torque.xml declares the 7 arm joints as <motor> torque actuators.
+# fingers_actuator is a tendon-based <general> actuator controlled separately
 # via write_ctrl (SceneEntityCfg with actuator_names), not through articulation.
 KINOVA_GRIPPER_TORQUE_ARM_ACTUATORS = XmlMotorActuatorCfg(
     target_names_expr=("joint_.*",),
