@@ -145,6 +145,19 @@ job **18278**. To resume, follow `AGENT.md` § "Resume sequence".
   Phase 1 init-pose DR confirmed: widens `init_joint_delta_deg`
   envelope 3-4× without any in-distribution cost. See
   `rl_experiments_log.md` for the cross-phase comparison table.
+- **2026-04-29 ~14:30** — **Cancelled Phase 2 (mso8ooz7) at iter
+  ~2700/4000** on the same plateau criterion that cancelled P0/P1:
+  SR delta over iter 1500-1800 → 2400-2700 was +0.008 (≤0.02
+  threshold). `model_2700.pt` adopted as canonical Phase 2
+  checkpoint. Launched Phase 2 OOD sweep as job-step 18278.21.
+- **2026-04-29 ~14:35** — **Phase 2 trains 2-7× faster than P0/P1
+  to early thresholds** (e.g. `reward ≥ 20` at iter 153 vs P0's 1003;
+  SR ≥ 0.5 at iter 198 vs P0's 1128). Late thresholds converge to
+  the same plateau time (~iter 2000-2700). Same seed across all
+  three phases, so the gap is not pure RNG noise — most likely DR
+  acting as data-diversity regularization on the reach-and-grasp
+  component. Logged as a research finding with the full
+  time-to-threshold table in `rl_experiments_log.md`.
 
 ## Run history
 
