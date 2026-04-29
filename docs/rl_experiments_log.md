@@ -165,9 +165,14 @@ Training trajectory:
 | 3000 | ~0.760 | — | ~30.0 | — |
 | 3979 (final) | **0.7723** | **0.0395** | **30.32** | 100.00 |
 
-- **In-dist eval:** TBD (Lane A nominal-value setting will give this)
-- **OOD sweep (Lane A):** running (job-step 18278.1).
-  Output: `docs/results/open_drawer_osc_phase0/sweep_summary.csv`
+- **In-dist eval:** SR=1.00 at all nominal settings (read from sweep
+  results — drawer_slide_friction=0.01, init_joint_delta=5°, etc.).
+- **OOD sweep (Lane A):** complete (job-step 18278.20).
+  **Robustness score: 0.696.** 7/10 axes pass at full envelope.
+  Breaking points: action_scale fails outside 0.01, arm_link_mass
+  fails at any perturbation, init_joint degrades at 20° / fails at
+  30°+, goal_depth fails at -0.28.
+  Files: `docs/results/open_drawer_osc_phase0/{sweep_summary.csv,breaking_points.md}`.
 - **Lane B:** smoke test pending (driver self-contained, ready to run).
 - **Decision:** baseline reference. Keep.
 
@@ -200,10 +205,24 @@ Training trajectory:
 
 - **Read on hypothesis:** ✅ in-distribution SR matches Phase 0 within
   ~0.001 — wider init-pose was absorbed without measurable cost.
-  Whether it actually buys robustness is for the OOD sweep to show.
-- **OOD sweep (Lane A):** running (job-step 18278.2).
-  Output: `docs/results/open_drawer_osc_phase1/sweep_summary.csv`
-- **Decision (so far):** keep, pending OOD sweep.
+- **OOD sweep (Lane A):** complete (job-step 18278.2).
+  **Robustness score: 0.746 (+0.050 vs Phase 0).** 7/10 axes pass at
+  full envelope.
+  Files: `docs/results/open_drawer_osc_phase1/{sweep_summary.csv,breaking_points.md}`.
+- **Hypothesis confirmed:** Phase 1 init-pose DR widens
+  `init_joint_delta_deg` envelope ~3-4× while leaving every other
+  axis identical to Phase 0:
+
+  | init_joint_delta | P0 SR | P1 SR | Δ |
+  |---:|---:|---:|---:|
+  | 10° | 1.00 | 1.00 | — |
+  | 20° | 0.72 | **1.00** | +0.28 |
+  | 30° | 0.44 (fail) | **0.94 (pass)** | +0.50 |
+  | 45° | 0.20 (fail) | 0.73 (degraded) | +0.53 |
+
+  Same weak axes inherited: action_scale, arm_link_mass, goal_depth.
+- **Decision:** keep. Adopt Phase 1 init-pose DR as the floor for
+  Phase 2+ (already built in).
 
 ---
 
@@ -236,14 +255,18 @@ Training trajectory:
   `r"(base|shoulder|half_arm_[12]|forearm|spherical_wrist_[12]|bracelet)_link"`.
   Verified env reset + 5 steps NaN-free post-fix.
 
-Training trajectory: TBD (running).
+Training trajectory (mso8ooz7, in flight):
 
 | Iter | success_rate | object_to_goal_error (m) | mean_reward | mean_ep_length |
 |---:|---:|---:|---:|---:|
-| TBD | TBD | TBD | TBD | TBD |
+| 1500 | ~0.72 | ~0.05 | ~28.5 | 100 |
+| 2000 | ~0.76 | ~0.043 | ~30.0 | 100 |
+| 2541 | 0.7733 | 0.0391 | 30.22 | 100 |
 
-- **OOD sweep (Lane A):** pending — schedule after training.
-- **Decision:** TBD.
+  No NaN events on mso8ooz7 (iter 0..2541 all clean post-regex-fix).
+
+- **OOD sweep (Lane A):** pending — schedule after training plateaus.
+- **Decision:** in flight.
 
 ---
 
@@ -291,6 +314,23 @@ Training trajectory: TBD (running).
   rollout. Rationale: keep all phase-to-phase comparisons at the same
   `num_envs=1024` so the per-iteration delta is meaningful. Will
   revisit if Phase 2 SR fails to recover Phase 0 levels by iter ~3000.
+- **2026-04-29** — OOD sweep Phase 0 vs Phase 1 confirms the init-pose
+  DR thesis: Phase 1 widens `init_joint_delta_deg` envelope from
+  10° to 30° (3× wider passing range, **+0.50 SR at 30°**) without
+  any in-distribution cost or any change on the other 9 axes. Adopt
+  Phase 1 init-pose deltas as the floor for all subsequent phases.
+- **2026-04-29** — Action-scale axis is brittle in *both* phases —
+  only the nominal 0.01 passes; the policy fails at 0.005 (too slow
+  to reach goal in 100 steps), 0.02 (overshoots), 0.05 (chaotic).
+  This rules out direct OSC-delta scaling as a robustness lever and
+  supports Phase 3's plan to constrain action via velocity
+  penalties / processed-action obs rather than via scale changes.
+- **2026-04-29** — Arm-link mass axis fails at 10% perturbation in
+  both Phase 0 and Phase 1 (terminal at episode length 1.00 — the
+  policy crashes immediately). This is exactly what Phase 2's
+  `arm_link_mass` DR is supposed to fix; its in-flight SR plateau
+  at 0.77 (matching baseline) is a positive signal that the DR is
+  not trading off in-distribution capability.
 
 ## Notes on metric definitions (training vs. eval)
 
@@ -316,9 +356,11 @@ numbers when both eval-SRs saturate near 1.0.
 
 ## Open questions
 
-- Does Phase 1 actually move the needle on the `init_joint_delta_deg`
-  and `robot_base_x_offset` sweep axes? In-distribution SR matched
-  Phase 0; OOD sweep result needed to answer this.
+- ~~Does Phase 1 actually move the needle on the `init_joint_delta_deg`
+  and `robot_base_x_offset` sweep axes?~~ **Answered (2026-04-29):**
+  yes for `init_joint_delta_deg` (envelope 3-4× wider; +0.50 SR at 30°);
+  no measurable change for `robot_base_x_offset` (already saturated at
+  10 cm in both phases, no breaking-point reached in either).
 - Phase 1 dwell SR plateaued at 0.77 (same as Phase 0). Is the
   remaining 0.23 floor structural (reach geometry, distal joint
   reach), or is it a converged-policy noise floor we can push by

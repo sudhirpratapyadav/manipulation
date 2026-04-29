@@ -52,9 +52,11 @@ Notes: <free-form>
 
 ## Status
 
-**Next pending:** Phase 0 + Phase 1 OOD eval (Lane A) on `model_3800.pt`,
-in parallel with Phase 2 training. Holder: `slurm/holder_3gpu.sh` job
-**18278**. To resume, follow `AGENT.md` § "Resume sequence".
+**Next pending:** Phase 2 training (mso8ooz7) → plateau or 4000 iters,
+then Phase 2 OOD sweep, then Phase 3 (slow-execution). Phase 0 + Phase 1
+OOD sweeps **complete**: P0 robustness 0.696, P1 robustness 0.746
+(+0.050; init_joint envelope widened 3-4×). Holder: `slurm/holder_3gpu.sh`
+job **18278**. To resume, follow `AGENT.md` § "Resume sequence".
 
 ## Autonomous decisions (cross-phase)
 
@@ -117,6 +119,32 @@ in parallel with Phase 2 training. Holder: `slurm/holder_3gpu.sh` job
   in-flight Phase 0 baseline, n=32 episodes, num_envs=16. Will
   re-run this handcheck on a high-success Phase 0 checkpoint to
   prove the harness in the interesting regime as well.
+- **2026-04-29 ~13:50** — **Phase 2 had two srun job-steps alive at
+  once:** the first (W&B `99v32mk7`, job-step 18278.2) was the broken
+  pre-fix run still in NaN-burst mode (~89% of iters all-1024 NaN);
+  the second (W&B `mso8ooz7`, job-step 18278.14) was the post-fix
+  clean run at SR≈0.77 with zero NaN events. Both writing to the same
+  `slurm/logs/phase2_train.out` file by accident, so log inspection
+  showed only the bad one's NaN bursts and looked like the fix had
+  failed. Mapped each to a run-dir via tfevents PID and confirmed
+  via wandb output.log. Cancelled 18278.2; mso8ooz7 alive and
+  healthy. Lesson: when launching parallel job-steps, give each its
+  own log path; otherwise tail-grep can mislead about which run is
+  in trouble.
+- **2026-04-29 ~13:55** — **Found a UnicodeEncodeError in
+  `eval_sweep.py:519`** (`md_path.write_text(...)` with default
+  ASCII codec choking on em-dash). The Phase 1 sweep CSV was fully
+  written (43 settings, all axes), but the markdown summary wasn't.
+  Added `encoding="utf-8"` and a separate `eval_sweep_md.py` utility
+  that re-renders the markdown from an existing CSV without
+  re-running the sweep — used to recover the Phase 1 summary,
+  reusable for any future write failure.
+- **2026-04-29 ~14:05** — **Phase 0 OOD sweep complete (job-step
+  18278.20)** after the original 18278.1 had failed earlier under
+  srun resource collision. Robustness 0.696 vs Phase 1's 0.746.
+  Phase 1 init-pose DR confirmed: widens `init_joint_delta_deg`
+  envelope 3-4× without any in-distribution cost. See
+  `rl_experiments_log.md` for the cross-phase comparison table.
 
 ## Run history
 
