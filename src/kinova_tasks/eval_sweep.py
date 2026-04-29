@@ -156,20 +156,32 @@ def _override_action_scale(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
 
 
 def _override_arm_link_mass_pct(cfg: ManagerBasedRlEnvCfg, pct: float) -> None:
-    """Perturb arm link masses by ±pct via pseudo_inertia (mass+inertia consistent)."""
+    """Perturb arm link masses by ±pct via pseudo_inertia (mass+inertia consistent).
+
+    Anchored to the seven Kinova arm links only. The earlier r".*_link" regex
+    matched ``end_effector_link`` (mass=0, zero inertia → NaN under
+    pseudo_inertia) and the gripper ``*_spring_link`` finger bodies, which
+    made every non-zero perturbation crash the policy at step 1 — masking the
+    actual arm-mass robustness behavior. Same anchored regex used by the
+    Phase 2 training-time DR (``open_drawer_osc.py:_apply_phase_knobs``).
+    """
     import math as _math
 
     import mjlab.envs.mdp as mdp
 
     if pct == 0.0:
         return
-    # mass scale = (1 ± pct/100) → α = ln(scale)/2; symmetric about 0.
+    # mass scale = exp(2α) → for ±pct, α_max = 0.5·ln(1 + pct/100).
     alpha_max = 0.5 * _math.log(1.0 + pct / 100.0)
+    _ARM_LINK_RE = (
+        r"(base|shoulder|half_arm_[12]|forearm|"
+        r"spherical_wrist_[12]|bracelet)_link"
+    )
     cfg.events["sweep_arm_link_mass"] = EventTermCfg(
         mode="startup",
         func=mdp.dr.pseudo_inertia,
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=r".*_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=_ARM_LINK_RE),
             "alpha_range": (-alpha_max, alpha_max),
             "distribution": "uniform",
         },
