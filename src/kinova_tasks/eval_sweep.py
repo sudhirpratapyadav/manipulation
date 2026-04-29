@@ -516,7 +516,7 @@ def main(cfg: SweepConfig | None = None) -> None:
     ]
 
     md_path = output_dir / "breaking_points.md"
-    md_path.write_text("\n".join(md_lines) + "\n")
+    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     print(f"[sweep] wrote {csv_path}")
     print(f"[sweep] wrote {md_path}")
