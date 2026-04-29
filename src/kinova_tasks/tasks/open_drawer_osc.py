@@ -1146,10 +1146,18 @@ def _phase4_knobs() -> PhaseKnobs:
 # baseline_dr — Phase 1 init-pose floor + Phase 2 drawer DR (no arm-mass)
 # + step-stepped curriculum widening of init ranges.
 #
-# Schedule (env steps via env.common_step_counter):
-#   iter 0..500     : frozen at start values (warm-up)
-#   iter 500..3000  : linear ramp from start → end
-#   iter 3000..5000 : frozen at end values (consolidate)
+# Schedule by *PPO iteration* (NOT common_step_counter — see conversion below):
+#   iter   0..500 : frozen at start values (warm-up)
+#   iter 500..3000: linear ramp from start → end
+#   iter 3000..5000: frozen at end values (consolidate)
+#
+# mjlab's `env.common_step_counter` increments once per `env.step()` call.
+# With ``num_steps_per_env`` = 24 in the PPO runner, that means
+#   common_step_counter ≈ ppo_iter × 24
+# so we convert ppo_iter thresholds to step-counter thresholds at the call
+# site below. (The `reward_curriculum` example in mjlab uses common_step_counter
+# directly, but for consistency with how the user reasons about training
+# duration we frame everything in PPO iters.)
 #
 # Curriculum knobs (single scalar each, scales a centered box / cone):
 #   joint_delta_deg : 15° → 30° (around home pose)
@@ -1159,22 +1167,27 @@ def _phase4_knobs() -> PhaseKnobs:
 
 
 _BASELINE_DR_DRAWER_CENTER = (0.8, 0.0, 0.4)
-_BASELINE_DR_RAMP_START = 500
-_BASELINE_DR_RAMP_END = 3000
+_BASELINE_DR_RAMP_START_ITER = 500
+_BASELINE_DR_RAMP_END_ITER = 3000
 
 
-def _ramp(step: int, start_step: int, end_step: int,
-          start_val: float, end_val: float) -> float:
-    """Linear ramp from start_val to end_val between [start_step, end_step].
+def _ramp_by_iter(env: ManagerBasedRlEnv,
+                  start_val: float, end_val: float,
+                  num_steps_per_env: int = 24) -> tuple[float, int]:
+    """Linear ramp on PPO iter (= common_step_counter // num_steps_per_env).
 
-    Held at start_val below start_step and at end_val above end_step.
+    Held at ``start_val`` below ``_BASELINE_DR_RAMP_START_ITER`` and at
+    ``end_val`` above ``_BASELINE_DR_RAMP_END_ITER``.
     """
-    if step <= start_step:
-        return start_val
-    if step >= end_step:
-        return end_val
-    t = (step - start_step) / (end_step - start_step)
-    return start_val + t * (end_val - start_val)
+    train_iter = env.common_step_counter // num_steps_per_env
+    if train_iter <= _BASELINE_DR_RAMP_START_ITER:
+        return start_val, train_iter
+    if train_iter >= _BASELINE_DR_RAMP_END_ITER:
+        return end_val, train_iter
+    t = (train_iter - _BASELINE_DR_RAMP_START_ITER) / (
+        _BASELINE_DR_RAMP_END_ITER - _BASELINE_DR_RAMP_START_ITER
+    )
+    return start_val + t * (end_val - start_val), train_iter
 
 
 def baseline_dr_drawer_extent_curriculum(
@@ -1183,12 +1196,11 @@ def baseline_dr_drawer_extent_curriculum(
     start_extent: float = 0.10,
     end_extent: float = 0.20,
     center_xyz: tuple[float, float, float] = _BASELINE_DR_DRAWER_CENTER,
+    num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
     """Widen drawer reset cube (x_range, y_range, z_range) over training."""
     del env_ids
-    h = _ramp(env.common_step_counter,
-              _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
-              start_extent, end_extent)
+    h, _ = _ramp_by_iter(env, start_extent, end_extent, num_steps_per_env)
     cx, cy, cz = center_xyz
     term = env.event_manager.get_term_cfg("reset_drawer")
     term.params["x_range"] = (cx - h, cx + h)
@@ -1202,12 +1214,11 @@ def baseline_dr_joint_delta_curriculum(
     env_ids: torch.Tensor,
     start_deg: float = 15.0,
     end_deg: float = 30.0,
+    num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
     """Widen the per-joint reset half-extent (degrees) over training."""
     del env_ids
-    d = _ramp(env.common_step_counter,
-              _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
-              start_deg, end_deg)
+    d, _ = _ramp_by_iter(env, start_deg, end_deg, num_steps_per_env)
     term = env.event_manager.get_term_cfg("reset_robot_joints")
     term.params["joint_delta_deg"] = float(d)
     return {"joint_delta_deg": torch.tensor(d)}
@@ -1220,14 +1231,12 @@ def baseline_dr_base_pose_curriculum(
     end_xy_m: float = 0.05,
     start_yaw_deg: float = 2.0,
     end_yaw_deg: float = 10.0,
+    num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
     """Widen base XY (m) and yaw (deg) reset half-extents over training."""
     del env_ids
-    s = env.common_step_counter
-    xy = _ramp(s, _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
-               start_xy_m, end_xy_m)
-    yaw_deg = _ramp(s, _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
-                    start_yaw_deg, end_yaw_deg)
+    xy, _ = _ramp_by_iter(env, start_xy_m, end_xy_m, num_steps_per_env)
+    yaw_deg, _ = _ramp_by_iter(env, start_yaw_deg, end_yaw_deg, num_steps_per_env)
     yaw_rad = yaw_deg * _DEG_TO_RAD
     term = env.event_manager.get_term_cfg("reset_base")
     term.params["pose_range"] = {
