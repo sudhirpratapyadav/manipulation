@@ -37,6 +37,9 @@ from kinova_tasks.tasks.open_door_osc import (
 from kinova_tasks.tasks.open_drawer_osc import (
     kinova_open_drawer_osc_env_cfg,
     kinova_open_drawer_osc_eval_env_cfg,
+    kinova_open_drawer_osc_phase1_env_cfg,
+    kinova_open_drawer_osc_phase2_env_cfg,
+    kinova_open_drawer_osc_phase4_env_cfg,
     kinova_open_drawer_osc_ppo_cfg,
 )
 
@@ -119,5 +122,29 @@ register_mjlab_task(
     task_id="Mjlab-Open-Drawer-Osc-Kinova-Eval",
     env_cfg=kinova_open_drawer_osc_eval_env_cfg(),
     play_env_cfg=kinova_open_drawer_osc_eval_env_cfg(),
+    rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
+)
+
+# Phase 1 — wider initial-pose randomization (joint_delta_deg=15, base XY/yaw).
+register_mjlab_task(
+    task_id="Mjlab-Open-Drawer-Osc-Kinova-Phase1",
+    env_cfg=kinova_open_drawer_osc_phase1_env_cfg(),
+    play_env_cfg=kinova_open_drawer_osc_phase1_env_cfg(play=True),
+    rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
+)
+
+# Phase 2 — Phase 1 + targeted DR on drawer slide friction/damping/mass and arm link mass.
+register_mjlab_task(
+    task_id="Mjlab-Open-Drawer-Osc-Kinova-Phase2",
+    env_cfg=kinova_open_drawer_osc_phase2_env_cfg(),
+    play_env_cfg=kinova_open_drawer_osc_phase2_env_cfg(play=True),
+    rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
+)
+
+# Phase 4 — combined deploy run (Phase 2 + wider DR + Phase 3 keeper TBD at submit time).
+register_mjlab_task(
+    task_id="Mjlab-Open-Drawer-Osc-Kinova-Phase4",
+    env_cfg=kinova_open_drawer_osc_phase4_env_cfg(),
+    play_env_cfg=kinova_open_drawer_osc_phase4_env_cfg(play=True),
     rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
 )

@@ -628,11 +628,40 @@ def drawer_out_of_range(
 
 
 # ---------------------------------------------------------------------------
-# Environment configuration
+# Phase knobs — robustness improvement plan deltas vs. the Phase 0 baseline.
 # ---------------------------------------------------------------------------
 
 
-def kinova_open_drawer_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+@dataclass
+class PhaseKnobs:
+    """Per-phase config deltas applied on top of the Phase 0 baseline.
+
+    Each field is the *new* value; ``None`` means "leave the Phase 0
+    default in place." See ``docs/open_drawer_improvement_plan.md``.
+    """
+
+    # Phase 1 — initial-pose randomization.
+    joint_delta_deg: float | None = None  # Phase 0: 5.0 → Phase 1: 15.0
+    base_pose_range: dict | None = None   # Phase 0: {} → Phase 1: ±2cm/±2°yaw
+
+    # Phase 2 — targeted DR (drawer + arm).
+    drawer_friction_range: tuple[float, float] | None = None   # frictionloss
+    drawer_damping_range:  tuple[float, float] | None = None
+    drawer_mass_alpha_range: tuple[float, float] | None = None  # pseudo_inertia α
+    arm_link_mass_alpha_range: tuple[float, float] | None = None
+
+    # Phase 3 — slow execution.
+    osc_delta_pos_clip: float | None = None  # 3a (None disables clip)
+    quadratic_vel_penalty_weight: float | None = None  # 3b
+    max_vel_curriculum: list[dict] | None = None  # 3c stages
+    add_processed_action_obs: bool = False  # 3d
+    action_scale_dr_range: tuple[float, float] | None = None  # 3e
+
+
+def kinova_open_drawer_osc_env_cfg(
+    play: bool = False,
+    phase_knobs: PhaseKnobs | None = None,
+) -> ManagerBasedRlEnvCfg:
     """Kinova Gen3 drawer-opening task with OSC (relative mode) + gripper control.
 
     Drawer starts closed. The policy must grasp the handle and pull it open to a
@@ -951,7 +980,161 @@ def kinova_open_drawer_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.observations["actor"].enable_corruption = False
         cfg.curriculum = {}
 
+    if phase_knobs is not None:
+        _apply_phase_knobs(cfg, phase_knobs)
+
     return cfg
+
+
+def _apply_phase_knobs(cfg: ManagerBasedRlEnvCfg, k: PhaseKnobs) -> None:
+    """Apply Phase 1+ deltas on top of the Phase 0 baseline cfg, in place."""
+
+    # --- Phase 1: initial-pose randomization ---
+    if k.joint_delta_deg is not None:
+        cfg.events["reset_robot_joints"].params["joint_delta_deg"] = k.joint_delta_deg
+    if k.base_pose_range is not None:
+        cfg.events["reset_base"].params["pose_range"] = dict(k.base_pose_range)
+
+    # --- Phase 2: targeted DR ---
+    if k.drawer_friction_range is not None:
+        cfg.events["dr_drawer_friction"] = EventTermCfg(
+            mode="startup",
+            func=mdp.dr.dof_frictionloss,
+            params={
+                "asset_cfg": SceneEntityCfg("drawer", joint_names=("drawer_slide",)),
+                "operation": "abs",
+                "distribution": "uniform",
+                "ranges": tuple(k.drawer_friction_range),
+            },
+        )
+    if k.drawer_damping_range is not None:
+        cfg.events["dr_drawer_damping"] = EventTermCfg(
+            mode="startup",
+            func=mdp.dr.dof_damping,
+            params={
+                "asset_cfg": SceneEntityCfg("drawer", joint_names=("drawer_slide",)),
+                "operation": "abs",
+                "distribution": "uniform",
+                "ranges": tuple(k.drawer_damping_range),
+            },
+        )
+    if k.drawer_mass_alpha_range is not None:
+        cfg.events["dr_drawer_mass"] = EventTermCfg(
+            mode="startup",
+            func=mdp.dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("drawer", body_names=("drawer_base",)),
+                "alpha_range": tuple(k.drawer_mass_alpha_range),
+                "distribution": "uniform",
+            },
+        )
+    if k.arm_link_mass_alpha_range is not None:
+        cfg.events["dr_arm_link_mass"] = EventTermCfg(
+            mode="startup",
+            func=mdp.dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=r".*_link"),
+                "alpha_range": tuple(k.arm_link_mass_alpha_range),
+                "distribution": "uniform",
+            },
+        )
+
+    # --- Phase 3: slow execution ---
+    if k.osc_delta_pos_clip is not None:
+        # Symmetric clip on the OSC delta-position channel (first 3 of 6 OSC dims).
+        c = float(k.osc_delta_pos_clip)
+        cfg.actions["osc_pose"].clip = {
+            ".*": (-1.0, 1.0),  # default
+            "osc_pose": [(-c, c)] * 3 + [(-1.0, 1.0)] * 3,
+        }
+    if k.quadratic_vel_penalty_weight is not None:
+        # Replace the linear hinge with a quadratic vel penalty.
+        from mjlab.tasks.manipulation import mdp as manipulation_mdp_local  # noqa: F401
+        cfg.rewards.pop("joint_vel_hinge", None)
+        cfg.rewards["joint_vel_quadratic"] = RewardTermCfg(
+            func=mdp.joint_vel_l2,
+            weight=k.quadratic_vel_penalty_weight,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",))},
+        )
+    if k.max_vel_curriculum is not None:
+        cfg.curriculum["joint_vel_hinge_max_vel"] = CurriculumTermCfg(
+            func=mdp.reward_curriculum,
+            params={"reward_name": "joint_vel_hinge", "stages": list(k.max_vel_curriculum)},
+        )
+    if k.add_processed_action_obs:
+        # Augment actor obs with the previous *processed* action.
+        # mjlab's last_action returns the raw action; we expose processed via
+        # a custom hook on the env. Defer until mjlab 1.4 lands the API; for
+        # now this knob is a no-op placeholder so the wiring is in place.
+        pass
+    if k.action_scale_dr_range is not None:
+        # Per-env OSC delta_pos_scale DR. Mjlab's mdp.dr.* doesn't expose this
+        # because delta_pos_scale is a config field, not a model field.
+        # Wiring deferred to a Phase 3e custom OSC wrapper.
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Phase preset factory functions — registered as separate task IDs so each
+# phase's deltas vs. Phase 0 are explicit and reproducible. See plan §3.
+# ---------------------------------------------------------------------------
+
+
+def _phase1_knobs() -> PhaseKnobs:
+    """Phase 1: wider initial-pose randomization."""
+    return PhaseKnobs(
+        joint_delta_deg=15.0,
+        base_pose_range={
+            "x":   (-0.02, 0.02),
+            "y":   (-0.02, 0.02),
+            "yaw": (-_DEG_TO_RAD * 2.0, _DEG_TO_RAD * 2.0),
+        },
+    )
+
+
+def _phase2_knobs() -> PhaseKnobs:
+    """Phase 2: targeted DR on top of Phase 1 keepers (init pose stays from P1)."""
+    k = _phase1_knobs()
+    # Drawer slide friction: nominal ~0.01; widen to [0.005, 0.02] (½ × .. 2×).
+    k.drawer_friction_range = (0.005, 0.02)
+    # Drawer slide damping: nominal 1.0; widen to [0.5, 2.0].
+    k.drawer_damping_range = (0.5, 2.0)
+    # Drawer base mass: scale ∈ [0.5, 2.0] → α = 0.5·ln(scale) ∈ [-0.347, +0.347].
+    a_drawer = 0.5 * _math.log(2.0)
+    k.drawer_mass_alpha_range = (-a_drawer, a_drawer)
+    # Arm link mass: ±10% → α ∈ [-0.0477, +0.0477] (narrow; widen in Phase 4).
+    a_arm = 0.5 * _math.log(1.10)
+    k.arm_link_mass_alpha_range = (-a_arm, a_arm)
+    return k
+
+
+def _phase4_knobs() -> PhaseKnobs:
+    """Phase 4 placeholder: starts as Phase 2 + (Phase 3 keeper if any).
+
+    Final ranges and Phase 3 keeper choice are decided after Phases 1-3
+    finish, so this is a sensible default that can be tuned at Phase 4
+    submission time.
+    """
+    k = _phase2_knobs()
+    # Widen drawer mass to [0.5, 5.0] → α ∈ [-0.347, +0.805].
+    k.drawer_mass_alpha_range = (-0.5 * _math.log(2.0), 0.5 * _math.log(5.0))
+    # Widen arm link mass to ±25%.
+    a_arm = 0.5 * _math.log(1.25)
+    k.arm_link_mass_alpha_range = (-a_arm, a_arm)
+    # Phase 3 keeper inserted here at submit time. Default: no slow-exec change.
+    return k
+
+
+def kinova_open_drawer_osc_phase1_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    return kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_phase1_knobs())
+
+
+def kinova_open_drawer_osc_phase2_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    return kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_phase2_knobs())
+
+
+def kinova_open_drawer_osc_phase4_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    return kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_phase4_knobs())
 
 
 def kinova_open_drawer_osc_eval_env_cfg() -> ManagerBasedRlEnvCfg:
