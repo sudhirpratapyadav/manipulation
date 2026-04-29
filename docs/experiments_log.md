@@ -76,6 +76,19 @@ in parallel with Phase 2 training. Holder: `slurm/holder_3gpu.sh` job
   checkpoint for both phases; `model_3700` is a fallback if 3800
   shows any anomaly. AGENT.md "early-cancel doomed runs" applies — runs
   weren't doomed but they were *done*.
+- **2026-04-29 ~08:30** — **Phase 2 NaN'd at iter 0** on the first launch.
+  `Episode_Termination/nan_detection = 1024` (every env) from iter 0 on,
+  rew=0, SR=0. Killed (job-step 18278.3) after ~10 min. Root cause: in
+  `_apply_phase_knobs` the `dr_arm_link_mass` event used regex
+  `body_names=r".*_link"` for `pseudo_inertia`, which matched the
+  Kinova's `end_effector_link` (mass=0, zero inertia → log/exp on zero
+  → NaN) and also the gripper `*_spring_link` finger bodies (~0.02 kg,
+  not arm dynamics). Fixed regex to anchored arm-only set
+  `(base|shoulder|half_arm_[12]|forearm|spherical_wrist_[12]|bracelet)_link`.
+  Verified post-fix env builds and steps 5× with no NaN, sensible
+  reward. Relaunched as job-step 18278.4 (W&B run `ukd2fffm`,
+  superseding the killed `99v32mk7`). Logged as a research-side
+  decision in `rl_experiments_log.md` too.
 - **2026-04-29 ~08:14** — **Tried to upgrade to 8-GPU holder (18273)**
   after cancelling 18271, hoping the freed GPUs would let qos=8gpu
   schedule. It sat in `PD (Resources)` for ~2 min: dgx2 reported

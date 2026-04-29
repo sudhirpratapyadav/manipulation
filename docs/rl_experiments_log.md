@@ -221,10 +221,20 @@ Training trajectory:
   - drawer base mass → log-U alpha ±0.347 (≈ ±34.7%)
   - arm link mass → log-U alpha ±0.0477 (≈ ±4.77%)
 - **Run name:** `drawer_dr`
-- **W&B run:** [99v32mk7](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/99v32mk7)
+- **W&B runs:**
+  - first attempt (NaN'd, killed): [99v32mk7](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/99v32mk7)
+  - second attempt (also NaN'd; cancelled): [ukd2fffm](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/ukd2fffm)
+  - **third attempt (clean, current):** [mso8ooz7](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/mso8ooz7)
 - **Iterations target:** 4000 (cut from 5000 plan default since
   Phase 0/1 plateaued by iter ~3000; 30% headroom for slower DR
   convergence).
+- **Bug found and fixed:** the first launch NaN'd at iter 0 because
+  `dr_arm_link_mass` used regex `r".*_link"` for `pseudo_inertia`,
+  which matched the Kinova's massless `end_effector_link` (mass=0 →
+  NaN) and the gripper `*_spring_link` finger bodies (~0.02 kg, not
+  arm dynamics). Tightened to
+  `r"(base|shoulder|half_arm_[12]|forearm|spherical_wrist_[12]|bracelet)_link"`.
+  Verified env reset + 5 steps NaN-free post-fix.
 
 Training trajectory: TBD (running).
 
@@ -281,6 +291,28 @@ Training trajectory: TBD (running).
   rollout. Rationale: keep all phase-to-phase comparisons at the same
   `num_envs=1024` so the per-iteration delta is meaningful. Will
   revisit if Phase 2 SR fails to recover Phase 0 levels by iter ~3000.
+
+## Notes on metric definitions (training vs. eval)
+
+The training metric `Episode_Metrics/success_rate` is the **dwell**
+metric: per-env, per-step, count the fraction of steps where
+`object_to_goal_error < 0.02 m`, then average across envs and steps in
+the rolling window. So a policy that reaches the goal late and dwells
+briefly scores low even if it succeeded.
+
+The OOD-sweep `success_rate` (Lane A, `eval_sweep._run_setting`) is the
+**terminal-step** metric: at the step just before each env terminates
+(time-out at 100 steps), check `object_to_goal_error < 0.02 m`; success
+is binary per episode, then averaged across episodes.
+
+These are not the same number. Phase 0 trained to dwell-SR ≈ 0.77,
+which corresponds to terminal-SR ≈ 1.0 on most settings (the policy
+*does* reach the goal; it just doesn't dwell perfectly within the
+0.02 m threshold for every step of every episode). When comparing
+training-time SR to eval-sweep SR, treat them as two different
+estimators of the same underlying competence; for cross-phase
+comparison, prefer **mean terminal error** over success-binarized
+numbers when both eval-SRs saturate near 1.0.
 
 ## Open questions
 

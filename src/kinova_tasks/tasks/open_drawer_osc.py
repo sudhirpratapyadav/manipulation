@@ -1029,11 +1029,20 @@ def _apply_phase_knobs(cfg: ManagerBasedRlEnvCfg, k: PhaseKnobs) -> None:
             },
         )
     if k.arm_link_mass_alpha_range is not None:
+        # Arm links only — excludes the massless `end_effector_link` (mass=0
+        # → log-uniform pseudo_inertia produces NaN) and the gripper
+        # `*_spring_link` bodies (gripper internals, not load-bearing for
+        # arm dynamics). The earlier `.*_link` match caught both and NaN'd
+        # every env at iter 0.
+        _ARM_LINK_RE = (
+            r"(base|shoulder|half_arm_[12]|forearm|"
+            r"spherical_wrist_[12]|bracelet)_link"
+        )
         cfg.events["dr_arm_link_mass"] = EventTermCfg(
             mode="startup",
             func=mdp.dr.pseudo_inertia,
             params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=r".*_link"),
+                "asset_cfg": SceneEntityCfg("robot", body_names=_ARM_LINK_RE),
                 "alpha_range": tuple(k.arm_link_mass_alpha_range),
                 "distribution": "uniform",
             },
