@@ -101,6 +101,29 @@ class OperationalSpaceActionCfg(ActionTermCfg):
   posture_kd: float = 2.0
   """Derivative gain for null-space posture control."""
 
+  tau_offset_std_Nm: float = 0.0
+  """Per-joint constant torque offset, drawn at episode reset.
+
+  Each joint independently samples ``offset_j ~ Uniform(-σ, +σ)`` once per
+  reset and the offset is added to ``compute_torques`` every step until the
+  next reset. Models slow-varying biases like gravity-comp / friction-model
+  mismatch on a real arm. ``0.0`` (default) disables the offset entirely.
+  Set per-eval at sweep time; left at ``0.0`` during training.
+  """
+
+  tau_noise_std_Nm: float = 0.0
+  """Per-step Gaussian torque noise σ, applied independently per joint
+  every control step. Models PWM jitter / sensorless current-noise on a real
+  arm. ``0.0`` (default) disables the noise. Set per-eval at sweep time.
+  """
+
+  action_noise_std: float = 0.0
+  """Per-step Gaussian noise σ added to the raw action vector before any
+  scaling/clip, in normalized action units (the policy's action space is
+  [-1, 1] for the OSC delta channels and the gripper). Models communication
+  channel noise on a real robot. ``0.0`` (default) disables the noise.
+  """
+
   def build(self, env: ManagerBasedRlEnv) -> OperationalSpaceAction:
     return OperationalSpaceAction(self, env)
 
@@ -172,6 +195,11 @@ class OperationalSpaceAction(ActionTerm):
     self._jacr_torch = wp.to_torch(self._jacr_wp)
     self._point_torch = wp.to_torch(self._point_wp).view(nworld, 3)
 
+    # Per-episode torque offset (drawn at reset, held until next reset).
+    self._tau_offset = torch.zeros(
+      self.num_envs, self._num_joints, device=self.device
+    )
+
   # ── ActionTerm interface ────────────────────────────────────────────────────
 
   @property
@@ -183,6 +211,8 @@ class OperationalSpaceAction(ActionTerm):
     return self._raw_actions
 
   def process_actions(self, actions: torch.Tensor) -> None:
+    if self.cfg.action_noise_std > 0.0:
+      actions = actions + self.cfg.action_noise_std * torch.randn_like(actions)
     self._raw_actions[:] = actions
 
     frame_pos, frame_quat = self._get_frame_pose()
@@ -216,6 +246,13 @@ class OperationalSpaceAction(ActionTerm):
     self._desired_pos[env_ids] = 0.0
     self._desired_quat[env_ids] = 0.0
     self._desired_quat[env_ids, 0] = 1.0
+    if self.cfg.tau_offset_std_Nm > 0.0:
+      shape = self._tau_offset[env_ids].shape
+      self._tau_offset[env_ids] = (
+        torch.rand(shape, device=self.device) * 2.0 - 1.0
+      ) * self.cfg.tau_offset_std_Nm
+    else:
+      self._tau_offset[env_ids] = 0.0
 
   # ── Core computation ────────────────────────────────────────────────────────
 
@@ -296,6 +333,13 @@ class OperationalSpaceAction(ActionTerm):
       N = I - torch.bmm(J_T, J_dyn_inv.transpose(1, 2))             # (B, n, n)
       tau_null = torch.bmm(N, tau_posture.unsqueeze(-1)).squeeze(-1) # (B, n)
       tau = tau + self.cfg.posture_weight * tau_null
+
+    # Per-episode torque offset (zero unless tau_offset_std_Nm > 0 at reset).
+    tau = tau + self._tau_offset
+
+    # Per-step torque noise (zero unless tau_noise_std_Nm > 0 in cfg).
+    if self.cfg.tau_noise_std_Nm > 0.0:
+      tau = tau + self.cfg.tau_noise_std_Nm * torch.randn_like(tau)
 
     # Optional torque clipping.
     if self._max_torque is not None:

@@ -188,6 +188,164 @@ def _override_arm_link_mass_pct(cfg: ManagerBasedRlEnvCfg, pct: float) -> None:
     )
 
 
+def _override_obs_noise_object_m(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
+    """Per-step Gaussian noise (σ in m) on every object-derived observation.
+
+    The training-time obs noise is uniform in [-0.01, +0.01] m on each of
+    object_pos / ee_to_object / object_to_goal independently. This sweep
+    replaces them with a per-step Gaussian of width ``value`` σ, applied
+    coherently to all three object-derived terms (the perception pipeline
+    on a real robot gives one noisy object_pos, and ee_to_object /
+    object_to_goal recompute from it). Implementation: same Gaussian σ on
+    each term — the policy could in principle exploit the independence to
+    denoise, but at the σ ranges we sweep that's negligible.
+    """
+    from mjlab.utils.noise import GaussianNoiseCfg
+
+    if value <= 0.0:
+        return  # nominal: keep training-time noise
+    noise = GaussianNoiseCfg(mean=0.0, std=value)
+    for term in ("object_pos", "ee_to_object", "object_to_goal", "goal_pos"):
+        cfg.observations["actor"].terms[term].noise = noise
+
+
+def _override_obs_noise_ee(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
+    """Per-step Gaussian noise on EE pose obs.
+
+    ``value`` is σ_lin in m; σ_ori (radians) = value · 0.2 (i.e. 5 mm linear
+    pairs with ~0.2 rad ≈ 11° orientation σ — match the user's pairing
+    intent: orientation noise grows with linear noise in lock-step).
+    Applied to ee_pose AND gripper_state (gripper opening is part of the
+    proprioception channel).
+    """
+    from mjlab.utils.noise import GaussianNoiseCfg
+
+    if value <= 0.0:
+        return
+    # ee_pose is 6D: linear(3) + axis-angle(3). Use scalar σ for now (mjlab
+    # NoiseCfg accepts NoiseParam = float | tuple); per-component pairing
+    # would need a tuple of length 6.
+    noise_lin = GaussianNoiseCfg(mean=0.0, std=value)
+    cfg.observations["actor"].terms["ee_pose"].noise = noise_lin
+    cfg.observations["actor"].terms["gripper_state"].noise = noise_lin
+
+
+def _override_action_noise_pct(cfg: ManagerBasedRlEnvCfg, pct: float) -> None:
+    """Per-step Gaussian action noise σ = pct/100 (action range is [-1, 1])."""
+    if pct <= 0.0:
+        return
+    cfg.actions["osc_pose"].action_noise_std = pct / 100.0
+
+
+def _override_gravity(cfg: ManagerBasedRlEnvCfg, scale: float) -> None:
+    """Scale gravity magnitude and add a small random tilt (≤ 5°).
+
+    ``scale`` is the gravity-magnitude multiplier (e.g. 1.1 = +10% gravity).
+    Tilt is drawn fresh per env at startup. Default mjlab gravity is
+    (0, 0, -9.81). Implementation: replace cfg.scene.gravity with a fixed
+    scaled-and-tilted vector — the same vector applies to all envs in this
+    setting since this is per-cfg, not per-env. Random tilt direction is
+    drawn once per setting at sweep time (uniformly in azimuth), tilt
+    magnitude ≤ 5°.
+    """
+    import math as _math
+    import random as _random
+
+    g = 9.81 * scale
+    # Random tilt: azimuth ∈ [0, 2π), polar ∈ [0, 5°].
+    azimuth = _random.uniform(0.0, 2.0 * _math.pi)
+    polar = _random.uniform(0.0, 5.0 * _math.pi / 180.0)
+    gx = -g * _math.sin(polar) * _math.cos(azimuth)
+    gy = -g * _math.sin(polar) * _math.sin(azimuth)
+    gz = -g * _math.cos(polar)
+    cfg.scene.gravity = (gx, gy, gz)
+
+
+def _override_torque_offset(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
+    """Per-episode constant torque offset σ (Nm), drawn per-joint independently."""
+    if value <= 0.0:
+        return
+    cfg.actions["osc_pose"].tau_offset_std_Nm = value
+
+
+def _override_torque_noise(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
+    """Per-step Gaussian torque noise σ (Nm), drawn per-joint independently."""
+    if value <= 0.0:
+        return
+    cfg.actions["osc_pose"].tau_noise_std_Nm = value
+
+
+# Impulse axis encodes (amp_N, count_per_episode) as a single ordered intensity
+# index. The mjlab `apply_body_impulse` event handles cooldown + duration
+# randomization, so timing is "random-throughout-episode" by construction.
+# We pick (cooldown, duration) so the expected number of impulses per
+# 100-step episode (=2.5 s at 0.025 s/step) lands close to ``count``.
+
+_IMPULSE_LEVELS: list[tuple[float, int]] = [
+    (0.0, 0),    # no impulse
+    (5.0, 1),    # one ~5 N event
+    (10.0, 1),   # one ~10 N event
+    (20.0, 2),   # two ~20 N events
+    (10.0, 4),   # four ~10 N events
+]
+
+
+def _impulse_event_params(amp_N: float, count: int) -> dict:
+    """Build kwargs for mjlab.envs.mdp.events.apply_body_impulse.
+
+    Episode is ~2.5 s long. ``count`` impulses ⇒ mean cooldown ≈ 2.5/count s,
+    ``duration_s`` = (0.05, 0.15) — short transients (1 to 6 control steps).
+    """
+    if count == 0:
+        # Disable by setting force_range=(0, 0). The event still ticks but
+        # writes zeros to xfrc_applied.
+        return {
+            "force_range": (0.0, 0.0),
+            "torque_range": (0.0, 0.0),
+            "duration_s": (0.05, 0.05),
+            "cooldown_s": (10.0, 10.0),
+        }
+    cooldown_mean = 2.5 / max(count, 1)
+    return {
+        "force_range": (-amp_N, amp_N),
+        "torque_range": (0.0, 0.0),
+        "duration_s": (0.05, 0.15),
+        "cooldown_s": (cooldown_mean * 0.5, cooldown_mean * 1.5),
+    }
+
+
+def _override_drawer_impulse(cfg: ManagerBasedRlEnvCfg, level_idx: float) -> None:
+    """Apply random impulses to drawer base. ``level_idx`` ∈ {0..4} indexes _IMPULSE_LEVELS."""
+    import mjlab.envs.mdp.events as events
+
+    idx = int(round(level_idx))
+    amp_N, count = _IMPULSE_LEVELS[idx]
+    params = _impulse_event_params(amp_N, count)
+    params["asset_cfg"] = SceneEntityCfg("drawer", body_names=("drawer_base",))
+    cfg.events["sweep_drawer_impulse"] = EventTermCfg(
+        mode="step",
+        func=events.apply_body_impulse,
+        params=params,
+    )
+
+
+def _override_ee_impulse(cfg: ManagerBasedRlEnvCfg, level_idx: float) -> None:
+    """Apply random impulses to bracelet (EE) link. Same level-index encoding."""
+    import mjlab.envs.mdp.events as events
+
+    idx = int(round(level_idx))
+    amp_N, count = _IMPULSE_LEVELS[idx]
+    # Smaller amps for EE (it's lighter and closer to control bandwidth).
+    amp_N = amp_N * 0.5
+    params = _impulse_event_params(amp_N, count)
+    params["asset_cfg"] = SceneEntityCfg("robot", body_names=("bracelet_link",))
+    cfg.events["sweep_ee_impulse"] = EventTermCfg(
+        mode="step",
+        func=events.apply_body_impulse,
+        params=params,
+    )
+
+
 def _override_fingertip_friction(cfg: ManagerBasedRlEnvCfg, value: float) -> None:
     """Override fingertip slide friction to a fixed value (replaces training DR)."""
     import mjlab.envs.mdp as mdp
@@ -278,6 +436,63 @@ def default_axes() -> list[SweepAxis]:
             apply=_override_fingertip_friction,
             nominal=0.6,
             units="μ",
+        ),
+        # --- New axes (perception/action/dynamics noise + impulses) ---
+        SweepAxis(
+            name="obs_noise_object_m",
+            values=[0.0, 0.002, 0.005, 0.01, 0.02],
+            apply=_override_obs_noise_object_m,
+            nominal=0.0,
+            units="σ m",
+        ),
+        SweepAxis(
+            name="obs_noise_ee",
+            values=[0.0, 0.001, 0.002, 0.005, 0.01],
+            apply=_override_obs_noise_ee,
+            nominal=0.0,
+            units="σ m (lin)",
+        ),
+        SweepAxis(
+            name="action_noise_pct",
+            values=[0.0, 1.0, 3.0, 5.0, 10.0],
+            apply=_override_action_noise_pct,
+            nominal=0.0,
+            units="σ %",
+        ),
+        SweepAxis(
+            name="gravity_scale",
+            values=[0.8, 0.9, 1.0, 1.1, 1.2],
+            apply=_override_gravity,
+            nominal=1.0,
+            units="× g (+ ≤5° tilt)",
+        ),
+        SweepAxis(
+            name="torque_offset_Nm",
+            values=[0.0, 0.05, 0.1, 0.5, 1.0],
+            apply=_override_torque_offset,
+            nominal=0.0,
+            units="σ Nm (per-ep)",
+        ),
+        SweepAxis(
+            name="torque_noise_Nm",
+            values=[0.0, 0.05, 0.1, 0.5, 1.0],
+            apply=_override_torque_noise,
+            nominal=0.0,
+            units="σ Nm (per-step)",
+        ),
+        SweepAxis(
+            name="drawer_impulse",
+            values=[0.0, 1.0, 2.0, 3.0, 4.0],  # level index into _IMPULSE_LEVELS
+            apply=_override_drawer_impulse,
+            nominal=0.0,
+            units="level (0=none → 4=4×10N)",
+        ),
+        SweepAxis(
+            name="ee_impulse",
+            values=[0.0, 1.0, 2.0, 3.0, 4.0],
+            apply=_override_ee_impulse,
+            nominal=0.0,
+            units="level (0=none → 4=4×5N)",
         ),
     ]
 
