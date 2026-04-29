@@ -438,6 +438,103 @@ decision below.)
 
 ---
 
+## Extended sweep — 8 new axes (perception / action / dynamics)
+
+After concluding that the original 10 axes mostly didn't probe real
+robustness gaps, we added 8 new axes that cover perception noise,
+action noise, gravity, torque-channel disturbance, and external
+impulses. Implementation: noise hooks land directly in the OSC
+controller (`tau_offset_std_Nm`, `tau_noise_std_Nm`, `action_noise_std`
+fields on `OperationalSpaceActionCfg`); obs noise replaces existing
+`UniformNoiseCfg` with `GaussianNoiseCfg` at sweep time; impulses use
+mjlab's `apply_body_impulse` with random cooldown / duration.
+
+### New-axis values
+
+| Axis | Values | Type | Rate |
+|---|---|---|---|
+| `obs_noise_object_m` | 0, 0.002, 0.005, 0.01, 0.02 m σ | Gaussian | per-step |
+| `obs_noise_ee` | 0, 0.001, 0.002, 0.005, 0.01 m σ | Gaussian | per-step |
+| `action_noise_pct` | 0, 1, 3, 5, 10 % σ on raw action | Gaussian | per-step |
+| `gravity_scale` | 0.8, 0.9, 1.0, 1.1, 1.2 × g + ≤5° tilt | constant | per-episode |
+| `torque_offset_Nm` | 0, 0.05, 0.1, 0.5, 1.0 N·m σ per joint | Uniform | per-episode |
+| `torque_noise_Nm` | 0, 0.05, 0.1, 0.5, 1.0 N·m σ per joint | Gaussian | per-step |
+| `drawer_impulse` | level 0..4 → (0, 5N×1, 10N×1, 20N×2, 10N×4) | xfrc | random throughout episode |
+| `ee_impulse` | level 0..4 → (0, 2.5N×1, 5N×1, 10N×2, 5N×4) | xfrc | random throughout episode |
+
+### Result on P0 + P1
+
+| | Phase 0 | Phase 1 |
+|---|---:|---:|
+| Robustness score (8 new axes) | **1.000** | **1.000** |
+| Settings with SR < 1.0 (out of 40) | 0 | 0 |
+| Settings with mean error > 5 mm (out of 40) | 0 | 0 |
+| Worst-case mean error (m) | 0.0026 | 0.0028 |
+
+**Every single setting at every value passed at SR=1.0 with mean
+error around 2 mm**, including the most extreme values:
+
+- 2 cm σ object obs noise (= the success threshold itself)
+- 1 N·m per-joint torque offset constant + 1 N·m torque noise per step
+- ±20% gravity tilted 5° from vertical
+- 10% action noise
+- Four 10 N impulses on drawer base, random timing
+- Four 5 N impulses on bracelet, random timing
+
+Files: `docs/results/new_axes_p0/{sweep_summary.csv,breaking_points.md}`,
+`docs/results/new_axes_p1/{...}`.
+
+### Observations / analysis
+
+1. **The OSC controller is doing the robustness work, not the policy.**
+   OSC's task-space PD with `qfrc_bias` (gravity + Coriolis)
+   compensation absorbs essentially all physical perturbations
+   transparently:
+   - **Action noise** is small relative to `kp_pos × pos_error` —
+     the policy commands large deltas relative to the noise floor.
+   - **Torque noise/offset** gets cancelled by OSC's pos-tracking
+     correction the next step.
+   - **Obs noise** matters only at grasp commitment (a brief moment),
+     and the rest of the episode it averages out.
+   - **Gravity changes** are absorbed exactly by `qfrc_bias`
+     compensation.
+   - **Impulses** on drawer/EE get corrected by OSC's pos-tracking
+     when the policy re-commands the next step.
+2. **The policy needs to learn one thing:** where to put the EE in
+   task space. Everything below that — gravity, joint dynamics,
+   torque-channel noise — is OSC's job.
+3. **DR is the wrong tool for an OSC-based policy.** Phase 2 confirmed
+   this on the original axes; the new axes confirm it more strongly.
+   Adding physics randomization to training doesn't help because the
+   policy never feels the physics — OSC isolates it.
+4. **The real sim2real risk is in the OSC controller itself, not the
+   policy.** If the real robot's torque limits, motor response time,
+   or gravity compensation differ from sim, OSC's perfect dynamics
+   compensation breaks down. This is what Phase 3 (slow-execution) is
+   really targeting — reducing the policy's reliance on OSC's
+   perfect compensation by making it command less aggressive
+   trajectories that survive imperfect compensation.
+5. **`init_joint_delta_deg` and `action_scale` remain the only true
+   robustness gaps** out of 18 swept axes. Phase 1 fixed the first.
+   Phase 3 should target the second by encouraging slower, more
+   conservative task-space trajectories.
+
+### Implications for the plan (revised)
+
+- **The deploy-stack doesn't need physics DR at all.** Phase 1
+  init-pose DR is the only DR that meaningfully helped, and only on
+  one axis.
+- **Phase 3 (slow-execution) is the only intervention left that
+  could plausibly buy real-world robustness.** It changes what the
+  policy commands, not what physics it experiences.
+- **Sim2real testing should focus on OSC-controller mismatch**, not
+  on physics DR coverage. The most likely failure mode at deploy
+  time is the real arm's torque/velocity limits clipping the OSC
+  output below what the policy commanded — a hard-to-DR-against
+  failure that the policy never sees in sim.
+
+---
+
 ### Phase 3 — slow-execution / safety-aware (planned)
 
 - **Hypothesis:** A real Kinova at high joint velocities is unsafe.
@@ -550,6 +647,24 @@ decision below.)
   at 2700 iters. **Decision: drop Phase 2 deltas entirely from the
   deploy stack.** Phase 1 is the DR floor. Phase 3 (slow-execution)
   is the next real experiment, targeting the action_scale gap.
+- **2026-04-29** — **Extended sweep with 8 new perception/action/
+  dynamics axes returned robustness=1.000 on both P0 and P1.** Every
+  one of 80 settings (40 per phase) passed at SR=1.0 with mean error
+  ~2 mm, including extreme values (2 cm σ object obs noise, 1 N·m
+  per-joint torque offset/noise, ±20% gravity with 5° tilt, 10%
+  action noise, 4×10 N drawer impulses, 4×5 N EE impulses).
+  **Conclusion: the OSC controller absorbs essentially all physical
+  perturbations through task-space PD + `qfrc_bias` compensation —
+  the policy never feels the physics noise.** This explains why
+  physics DR (Phase 2) helped nothing: the policy never had a
+  robustness gap on those axes to begin with. The deploy stack
+  doesn't need any physics DR — only the Phase 1 init-pose deltas
+  matter. Phase 3 (slow-execution) is the only remaining
+  intervention that could plausibly buy real-world robustness,
+  because it changes what the policy commands rather than what
+  physics it experiences. **Real sim2real risk is in OSC-controller
+  mismatch (real robot's torque/velocity limits clipping the OSC
+  output), which physics DR cannot probe.**
 
 ## Cross-phase training-curve comparison
 
