@@ -535,6 +535,60 @@ Files: `docs/results/new_axes_p0/{sweep_summary.csv,breaking_points.md}`,
 
 ---
 
+### baseline_dr — Phase 1 floor + drawer DR + curriculum-widened init ranges (planned)
+
+- **Hypothesis:** The eval-sweep findings show 8 of 10 original axes
+  weren't actually broken on baseline, *but* the policy's eval also
+  used the same narrow init-pose distribution it trained on. Widening
+  the init-pose distribution at training time — drawer cube and robot
+  init pose — should expand the policy's true operating envelope on
+  the only two axes that matter (`init_joint_delta_deg` and the
+  drawer-pose axes that aren't even in the current sweep). Drawer
+  physics DR (friction/damping/mass) is kept from Phase 2 even though
+  it didn't help — it's nearly free in compute, and the asymmetric
+  cabinet hardware on the real robot may differ enough from sim that
+  having it in training is cheap insurance.
+- **Change vs. Phase 1:**
+  - Add Phase 2 drawer DR (slide friction U(0.005, 0.02), damping
+    U(0.5, 2.0), base mass scale ∈ [0.5, 2.0]) — but **drop arm-link
+    mass DR** (confirmed non-issue by post-regex-fix resweep).
+  - Add 3 step-stepped curriculum knobs that linearly widen the init
+    distribution between env-step 500 and 3000:
+
+    | Curriculum knob | Center | Iter 0–500 (start) | Iter 3000+ (end) |
+    |---|---|---|---|
+    | drawer cube half-extent (m) | (0.8, 0, 0.4) | 0.10 | **0.20** |
+    | joint init half-extent (deg) | home pose | 15 | **30** |
+    | base xy half-extent (m) | (0, 0) | 0.02 | **0.05** |
+    | base yaw half-extent (deg) | 0 | 2 | **10** |
+
+  - Train 5000 iters total (500 frozen-warmup + 2500 ramp + 2000
+    frozen-end).
+- **Schedule rationale:**
+  - 500 iters frozen at Phase-1-floor lets the policy learn the base
+    task before the distribution widens — avoids cold-start failure
+    from a too-wide initial distribution.
+  - Linear ramp from 500 to 3000 matches the time the Phase 0/1/2
+    runs spent reaching SR ~0.7 plateau on the narrower distribution.
+  - 2000 iters frozen at the end gives the policy 2× plateau time at
+    full width before evaluation.
+- **Drawer cube z range** is *new* (P0/P1/P2 always trained at z=0.45).
+  Adding a ±10cm z-extent at curriculum start means the policy sees
+  vertical drawer position variation from iter 0 — needed because the
+  curriculum uses a single half-extent scalar for x/y/z together.
+- **Run name:** `baseline_dr`
+- **Task ID:** `Mjlab-Open-Drawer-Osc-Kinova-BaselineDr`
+- **Launch:** `slurm/open_drawer_osc_baseline_dr.sh` (5000 iters,
+  num_envs=1024, tags `("baseline_dr","curriculum")`).
+- **Decision criteria:** compare OOD sweep vs Phase 1 (the current
+  champion at robustness 0.746). Specifically watch `init_joint_delta_deg`
+  at 30° and 45° — Phase 1 passes 30°, degrades 45°. baseline_dr should
+  **pass 45°** if the curriculum worked. Also expect SR=1.0 across
+  the full drawer position cube at eval.
+- **Status:** ready to launch.
+
+---
+
 ### Phase 3 — slow-execution / safety-aware (planned)
 
 - **Hypothesis:** A real Kinova at high joint velocities is unsafe.

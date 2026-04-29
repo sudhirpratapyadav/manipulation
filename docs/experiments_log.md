@@ -52,11 +52,21 @@ Notes: <free-form>
 
 ## Status
 
-**Next pending:** Phase 2 training (mso8ooz7) → plateau or 4000 iters,
-then Phase 2 OOD sweep, then Phase 3 (slow-execution). Phase 0 + Phase 1
-OOD sweeps **complete**: P0 robustness 0.696, P1 robustness 0.746
-(+0.050; init_joint envelope widened 3-4×). Holder: `slurm/holder_3gpu.sh`
-job **18278**. To resume, follow `AGENT.md` § "Resume sequence".
+**Next pending:** baseline_dr training (Phase 1 + drawer DR + curriculum
+widening), then OOD sweep on baseline_dr, then Phase 3 (slow-execution).
+Phase 2 (drawer + arm-link DR, fixed) returned 0.721 — *worse* than
+Phase 1's 0.746. Eval-sweep harness bug post-mortem: the original
+`r".*_link"` regex NaN'd every arm_link_mass test perturbation; resweep
+with fixed regex shows P0 already passes arm_mass at +/-50%. Combined
+with the 8-axis extended sweep also returning robustness=1.0 on both P0
+and P1, the conclusion is that the OSC controller absorbs essentially
+all physical perturbations transparently — physics DR doesn't help.
+The only real robustness gap on the eval is `init_joint_delta_deg`, fixed
+by Phase 1. baseline_dr is meant to push that further via curriculum
+widening of init distribution.
+
+Holder: `slurm/holder_3gpu.sh` job **18278**. To resume, follow
+`AGENT.md` § "Resume sequence".
 
 ## Autonomous decisions (cross-phase)
 
@@ -169,6 +179,16 @@ job **18278**. To resume, follow `AGENT.md` § "Resume sequence".
   Drawer DR (slide_friction, slide_damping, base_mass) had no
   measurable effect: P0/P1 already passed all swept values at SR=1.00,
   no headroom to gain. Detailed analysis in `rl_experiments_log.md`.
+- **2026-04-29 ~22:00** — **baseline_dr task implemented and ready
+  to launch.** Phase 1 init-pose floor + Phase 2 drawer DR (no
+  arm-link mass, since the resweep showed it's a non-issue) + 3
+  curriculum knobs that linearly widen drawer cube (0.10 → 0.20 m
+  half-extent, centered at (0.8, 0, 0.4)), joint init delta (15° →
+  30°), and base xy/yaw (2cm/2° → 5cm/10°) between env-step 500 and
+  3000. Total 5000 iters. Smoke test on GPU verified env builds, no
+  NaN, curriculum ramps cleanly across the full schedule. Task ID
+  `Mjlab-Open-Drawer-Osc-Kinova-BaselineDr`, launcher
+  `slurm/open_drawer_osc_baseline_dr.sh`, run-name `baseline_dr`.
 
 ## Run history
 

@@ -325,10 +325,14 @@ def reset_drawer(
     drawer_entity_name: str = "drawer",
     x_range: tuple[float, float] = (_DRAWER_POS_LO[0], _DRAWER_POS_HI[0]),
     y_range: tuple[float, float] = (_DRAWER_POS_LO[1], _DRAWER_POS_HI[1]),
-    z: float = _DRAWER_POS_LO[2],
+    z_range: tuple[float, float] | float = _DRAWER_POS_LO[2],
     init_slide_range: tuple[float, float] = (_DRAWER_INIT_SLIDE_LO, _DRAWER_INIT_SLIDE_HI),
 ) -> None:
-    """Reset drawer base position and slide joint to a randomly sampled initial position."""
+    """Reset drawer base position and slide joint to a randomly sampled initial position.
+
+    ``z_range`` accepts either a scalar (deterministic z) or a 2-tuple
+    ``(lo, hi)`` for uniform sampling over a vertical range.
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -336,8 +340,12 @@ def reset_drawer(
     n = len(env_ids)
 
     # Sample drawer base position (mocap body)
-    lower = torch.tensor([x_range[0], y_range[0], z], device=env.device)
-    upper = torch.tensor([x_range[1], y_range[1], z], device=env.device)
+    if isinstance(z_range, (tuple, list)):
+        z_lo, z_hi = z_range
+    else:
+        z_lo = z_hi = z_range
+    lower = torch.tensor([x_range[0], y_range[0], z_lo], device=env.device)
+    upper = torch.tensor([x_range[1], y_range[1], z_hi], device=env.device)
     pos = sample_uniform(lower, upper, (n, 3), device=env.device)
     pos = pos + env.scene.env_origins[env_ids]
 
@@ -772,7 +780,7 @@ def kinova_open_drawer_osc_env_cfg(
                 "drawer_entity_name": "drawer",
                 "x_range": (_DRAWER_POS_LO[0], _DRAWER_POS_HI[0]),
                 "y_range": (_DRAWER_POS_LO[1], _DRAWER_POS_HI[1]),
-                "z": _DRAWER_POS_LO[2],
+                "z_range": _DRAWER_POS_LO[2],
                 "init_slide_range": (_DRAWER_INIT_SLIDE_LO, _DRAWER_INIT_SLIDE_HI),
             },
         ),
@@ -1134,6 +1142,146 @@ def _phase4_knobs() -> PhaseKnobs:
     return k
 
 
+# ---------------------------------------------------------------------------
+# baseline_dr — Phase 1 init-pose floor + Phase 2 drawer DR (no arm-mass)
+# + step-stepped curriculum widening of init ranges.
+#
+# Schedule (env steps via env.common_step_counter):
+#   iter 0..500     : frozen at start values (warm-up)
+#   iter 500..3000  : linear ramp from start → end
+#   iter 3000..5000 : frozen at end values (consolidate)
+#
+# Curriculum knobs (single scalar each, scales a centered box / cone):
+#   joint_delta_deg : 15° → 30° (around home pose)
+#   base_extent     : 1.0 → 2.5 (multiplier on Phase 1 (xy=2cm, yaw=2°))
+#   drawer_extent_m : 0.10 → 0.20 m (drawer cube half-side, center=(0.8,0,0.4))
+# ---------------------------------------------------------------------------
+
+
+_BASELINE_DR_DRAWER_CENTER = (0.8, 0.0, 0.4)
+_BASELINE_DR_RAMP_START = 500
+_BASELINE_DR_RAMP_END = 3000
+
+
+def _ramp(step: int, start_step: int, end_step: int,
+          start_val: float, end_val: float) -> float:
+    """Linear ramp from start_val to end_val between [start_step, end_step].
+
+    Held at start_val below start_step and at end_val above end_step.
+    """
+    if step <= start_step:
+        return start_val
+    if step >= end_step:
+        return end_val
+    t = (step - start_step) / (end_step - start_step)
+    return start_val + t * (end_val - start_val)
+
+
+def baseline_dr_drawer_extent_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_extent: float = 0.10,
+    end_extent: float = 0.20,
+    center_xyz: tuple[float, float, float] = _BASELINE_DR_DRAWER_CENTER,
+) -> dict[str, torch.Tensor]:
+    """Widen drawer reset cube (x_range, y_range, z_range) over training."""
+    del env_ids
+    h = _ramp(env.common_step_counter,
+              _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
+              start_extent, end_extent)
+    cx, cy, cz = center_xyz
+    term = env.event_manager.get_term_cfg("reset_drawer")
+    term.params["x_range"] = (cx - h, cx + h)
+    term.params["y_range"] = (cy - h, cy + h)
+    term.params["z_range"] = (cz - h, cz + h)
+    return {"half_extent_m": torch.tensor(h)}
+
+
+def baseline_dr_joint_delta_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_deg: float = 15.0,
+    end_deg: float = 30.0,
+) -> dict[str, torch.Tensor]:
+    """Widen the per-joint reset half-extent (degrees) over training."""
+    del env_ids
+    d = _ramp(env.common_step_counter,
+              _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
+              start_deg, end_deg)
+    term = env.event_manager.get_term_cfg("reset_robot_joints")
+    term.params["joint_delta_deg"] = float(d)
+    return {"joint_delta_deg": torch.tensor(d)}
+
+
+def baseline_dr_base_pose_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_xy_m: float = 0.02,
+    end_xy_m: float = 0.05,
+    start_yaw_deg: float = 2.0,
+    end_yaw_deg: float = 10.0,
+) -> dict[str, torch.Tensor]:
+    """Widen base XY (m) and yaw (deg) reset half-extents over training."""
+    del env_ids
+    s = env.common_step_counter
+    xy = _ramp(s, _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
+               start_xy_m, end_xy_m)
+    yaw_deg = _ramp(s, _BASELINE_DR_RAMP_START, _BASELINE_DR_RAMP_END,
+                    start_yaw_deg, end_yaw_deg)
+    yaw_rad = yaw_deg * _DEG_TO_RAD
+    term = env.event_manager.get_term_cfg("reset_base")
+    term.params["pose_range"] = {
+        "x":   (-xy, xy),
+        "y":   (-xy, xy),
+        "yaw": (-yaw_rad, yaw_rad),
+    }
+    return {
+        "xy_extent_m": torch.tensor(xy),
+        "yaw_extent_deg": torch.tensor(yaw_deg),
+    }
+
+
+def _baseline_dr_knobs() -> PhaseKnobs:
+    """baseline_dr: Phase 1 init-pose floor + Phase 2 drawer DR (no arm-mass).
+
+    Curriculum widening of init ranges is installed separately by
+    ``_install_baseline_dr_curriculum`` since it lives outside the
+    static PhaseKnobs schema.
+    """
+    k = _phase1_knobs()
+    k.drawer_friction_range = (0.005, 0.02)
+    k.drawer_damping_range = (0.5, 2.0)
+    a_drawer = 0.5 * _math.log(2.0)
+    k.drawer_mass_alpha_range = (-a_drawer, a_drawer)
+    # No arm_link_mass_alpha_range — confirmed non-issue by P0 resweep.
+    return k
+
+
+def _install_baseline_dr_curriculum(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Install the 3 curriculum terms that widen init ranges over training."""
+    cfg.curriculum["baseline_dr_drawer_extent"] = CurriculumTermCfg(
+        func=baseline_dr_drawer_extent_curriculum,
+        params={
+            "start_extent": 0.10,
+            "end_extent": 0.20,
+            "center_xyz": _BASELINE_DR_DRAWER_CENTER,
+        },
+    )
+    cfg.curriculum["baseline_dr_joint_delta"] = CurriculumTermCfg(
+        func=baseline_dr_joint_delta_curriculum,
+        params={"start_deg": 15.0, "end_deg": 30.0},
+    )
+    cfg.curriculum["baseline_dr_base_pose"] = CurriculumTermCfg(
+        func=baseline_dr_base_pose_curriculum,
+        params={
+            "start_xy_m": 0.02,
+            "end_xy_m": 0.05,
+            "start_yaw_deg": 2.0,
+            "end_yaw_deg": 10.0,
+        },
+    )
+
+
 def kinova_open_drawer_osc_phase1_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     return kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_phase1_knobs())
 
@@ -1144,6 +1292,19 @@ def kinova_open_drawer_osc_phase2_env_cfg(play: bool = False) -> ManagerBasedRlE
 
 def kinova_open_drawer_osc_phase4_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     return kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_phase4_knobs())
+
+
+def kinova_open_drawer_osc_baseline_dr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """baseline_dr: Phase 1 init-pose floor + Phase 2 drawer DR + curriculum.
+
+    Curriculum widens drawer cube (0.10 → 0.20 m half-extent), joint init
+    delta (15° → 30°), and base pose (xy 2 → 5 cm, yaw 2° → 10°) linearly
+    between env-step 500 and 3000, then holds. Train ~5000 iters.
+    """
+    cfg = kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_baseline_dr_knobs())
+    if not play:
+        _install_baseline_dr_curriculum(cfg)
+    return cfg
 
 
 def kinova_open_drawer_osc_eval_env_cfg() -> ManagerBasedRlEnvCfg:
