@@ -158,6 +158,17 @@ job **18278**. To resume, follow `AGENT.md` § "Resume sequence".
   acting as data-diversity regularization on the reach-and-grasp
   component. Logged as a research finding with the full
   time-to-threshold table in `rl_experiments_log.md`.
+- **2026-04-29 ~14:55** — **Phase 2 OOD sweep complete (job-step
+  18278.21): robustness 0.721, *worse* than Phase 1 (0.746).** Two
+  failure modes: (a) `arm_link_mass_pct` still fails at 10%
+  perturbation (alpha=±4.77% DR was too narrow — same instant-crash
+  pattern as P0/P1); (b) `init_joint_delta_deg` regresses vs Phase 1
+  (94% → 69% pass at 30°), likely undertraining since Phase 2 only
+  ran 2700 iters vs Phase 1's 3888. **Decision: reject Phase 2
+  deltas for the deploy run — Phase 1 stays the DR floor for Phase 3.**
+  Drawer DR (slide_friction, slide_damping, base_mass) had no
+  measurable effect: P0/P1 already passed all swept values at SR=1.00,
+  no headroom to gain. Detailed analysis in `rl_experiments_log.md`.
 
 ## Run history
 

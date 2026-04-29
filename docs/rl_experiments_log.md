@@ -270,9 +270,35 @@ Training trajectory (mso8ooz7, early-cancelled at iter ~2700):
   cancelled Phase 0 + 1.
 
 - **Checkpoint (canonical):** `model_2700.pt`
-- **OOD sweep (Lane A):** running (job-step 18278.21).
-- **Decision:** training cancelled at plateau; OOD sweep is the
-  experiment.
+- **OOD sweep (Lane A):** complete (job-step 18278.21).
+  **Robustness score: 0.721 — *worse* than Phase 1 (0.746), better
+  than Phase 0 (0.696).**
+  Files: `docs/results/open_drawer_osc_phase2/{sweep_summary.csv,breaking_points.md}`.
+- **Hypothesis NOT confirmed.** Two failure modes:
+  1. **`arm_link_mass_pct` still fails at 10% perturbation** (SR=0,
+     episode_length=1, instant crash). Same as P0/P1. The arm-link
+     DR `alpha=±0.0477` (≈ ±4.77%) was too narrow vs the 10% test
+     perturbation and the policy got no useful margin. Either widen
+     the DR (e.g. `alpha=±0.10`) or accept that arm-mass robustness
+     is structurally hard with `pseudo_inertia` and isn't a
+     reachable target.
+  2. **`init_joint_delta_deg` regresses vs Phase 1.** P1 passes 30°
+     at SR=0.94; P2 only 0.69 (degraded). Likely undertraining
+     (P2 ran 2700 iters vs P1's 3888). The added DR distractors
+     slowed convergence on the init-pose component even though
+     Phase 2 trained 5-7× faster on the *reach-and-grasp* component
+     (cross-phase table earlier). Implication: time-to-plateau on
+     each axis is *not* uniform under DR.
+- **Drawer-axis result:** all three drawer axes (slide_friction,
+  slide_damping, base_mass_scale) stayed at SR=1.00 across the swept
+  envelope. But Phase 0/1 were already at 1.00 there — there was no
+  headroom for Phase 2 to gain. The drawer DR is *neither* helping
+  *nor* hurting on its target axes.
+- **Decision:** **Reject Phase 2 deltas for the deploy run.** Use
+  Phase 1 as the DR floor for Phase 3. If we want arm-link
+  robustness, the right next experiment is to widen the alpha range
+  to ±0.10 and retrain on top of Phase 1 (separate from Phase 3
+  slow-execution).
 
 ---
 
@@ -283,15 +309,27 @@ Training trajectory (mso8ooz7, early-cancelled at iter ~2700):
   on `max_vel`. Plan §3 lists 3a–3e in increasing intervention order;
   stop at the first that holds in-dist SR while reducing observed
   joint velocity.
+- **DR floor:** Phase 1 init-pose deltas (Phase 2 deltas rejected;
+  see cross-phase decision 2026-04-29).
+- **Variant order:** 3a → 3b → 3c → 3d → 3e (least → most
+  invasive). Stop at the first that holds in-dist SR ≥ 0.75 *and*
+  reduces observed `joint_vel_max` by ≥ 30% on a held-out rollout.
 - **3a — quadratic vel penalty:** replace hinge with quadratic
-  `−w·||dq||²` after iter 2400.
+  `−w·||dq||²` after iter 2400. Recommended **first try** because
+  it's a reward-shape change only — no env API changes, no obs
+  changes; cleanest comparison to Phase 1.
 - **3b — tighter hinge:** drop `max_vel` 0.5 → 0.3 rad/s.
 - **3c — vel curriculum:** schedule `max_vel` 0.6 → 0.4 → 0.3 over
   3 stages.
 - **3d — OSC delta clip:** clip `delta_pos_scale` action component to
   ±0.5 (effective Δpos ≤ 5 mm).
 - **3e — processed-action obs:** add post-clip processed action to obs.
-- **Status:** pending; Phase 2 outcome will inform which 3x to try.
+- **Status:** ready to launch (3a). Phase 2 sweep showed
+  `action_scale` is brittle in *both* P0 and P1 (only nominal 0.01
+  passes, all 4 perturbed values fail); 3a/3b/3c don't directly
+  target `action_scale` but should reduce the policy's reliance on
+  large velocity excursions, which may indirectly tighten the
+  action_scale envelope. Worth measuring on the Phase 3 sweep.
 
 ---
 
@@ -337,6 +375,23 @@ Training trajectory (mso8ooz7, early-cancelled at iter ~2700):
   `arm_link_mass` DR is supposed to fix; its in-flight SR plateau
   at 0.77 (matching baseline) is a positive signal that the DR is
   not trading off in-distribution capability.
+- **2026-04-29** — **Phase 2 sweep returned 0.721 (worse than P1's
+  0.746, better than P0's 0.696).** Two failure modes identified:
+  arm_link_mass DR alpha=±4.77% is too narrow vs 10% test
+  perturbation (same crash as P0/P1); init_joint regresses vs P1
+  (likely undertraining at 2700 iters). **Decision: reject Phase 2
+  deltas for the deploy run; Phase 1 stays the DR floor.** If
+  arm-mass robustness is worth pursuing, the right experiment is
+  Phase 2' = Phase 1 + arm_link_mass at α=±0.10 (≈ ±10%) and run
+  to plateau (~3800 iters), as a *separate* experiment from
+  Phase 3.
+- **2026-04-29** — **Drawer DR knobs (friction, damping, base_mass)
+  changed nothing** — both P0 and P1 already passed all swept values
+  at SR=1.00 with no headroom to gain. The "drawer cabinet has
+  manufacturing tolerance" story may be true for the real cabinet but
+  doesn't show up as a robustness gap in our sweep envelope. Could
+  drop these from a future deploy run unless we widen the swept
+  values further.
 
 ## Cross-phase training-curve comparison
 
