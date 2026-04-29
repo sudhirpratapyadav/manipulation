@@ -302,6 +302,142 @@ Training trajectory (mso8ooz7, early-cancelled at iter ~2700):
 
 ---
 
+## What's randomized vs. what's tested (P0 / P1 / P2)
+
+### Train-time DR knobs
+
+| Knob | Phase 0 (baseline) | Phase 1 | Phase 2 (= P1 + drawer/arm) |
+|---|---|---|---|
+| Joint reset angle | ±5° | **±15°** | ±15° (inherited) |
+| Robot base pose | none (fixed) | **±2 cm x, ±2 cm y, ±2° yaw** | inherited |
+| Drawer slide friction | fixed (0.01) | fixed | **U(0.005, 0.02)** = ½× to 2× |
+| Drawer slide damping | fixed (1.0) | fixed | **U(0.5, 2.0)** = ½× to 2× |
+| Drawer base mass | fixed | fixed | **scale ∈ [0.5, 2.0]** (log-uniform α) |
+| Arm-link mass (7 arm bodies) | fixed | fixed | **scale ∈ [0.91, 1.10]** (±10%, log-uniform α) |
+| Object/goal/handle position | fixed | fixed | fixed |
+| Fingertip friction | fixed | fixed | fixed |
+| Action scale (OSC delta) | fixed at 0.01 | fixed | fixed |
+| Velocity max (joint hinge) | fixed | fixed | fixed |
+
+All other env params (timestep, reward weights, gripper, observation
+noise, PPO hyperparameters, network architecture, seed) are identical
+across phases.
+
+### Eval-time perturbations (Lane A OOD sweep — same for all phases)
+
+64 envs × 64 episodes per setting; success = `object_to_goal_error
+≤ 0.02 m` at terminal step. **Bold** = nominal value matching training
+distribution.
+
+| Axis | Tested values | Coverage by P2's training-DR |
+|---|---|---|
+| `drawer_slide_friction` (N) | 0.0025, 0.005, **0.01**, 0.02, 0.04 | middle 3 in DR; 0.0025 + 0.04 are extrapolation |
+| `drawer_slide_damping` (N·s/m) | 0.25, 0.5, **1.0**, 2.0, 4.0 | middle 3 in DR; 0.25 + 4.0 are extrapolation |
+| `drawer_base_mass_scale` (×) | 0.5, **1.0**, 2.0, 5.0 | first 3 in DR; 5.0 is extrapolation |
+| `goal_depth` (m) | -0.1, -0.15, **-0.2**, -0.25, -0.28 | not in DR |
+| `init_slide` (m, drawer pre-open) | **0.0**, -0.05, -0.1 | not in DR |
+| `robot_base_x_offset` (cm) | **0**, 2, 5, 10 | P1: ±2 cm — interpolation only at 0/2 |
+| `init_joint_delta_deg` (°) | **5**, 10, 20, 30, 45 | P1: ±15° — interpolation only at 5/10 |
+| `action_scale` (m, OSC Δpos) | 0.005, **0.01**, 0.02, 0.05 | not in DR |
+| `arm_link_mass_pct` (±%) | **0**, 10, 25, 50 | P2: ±10% — interpolation only at 0/10 |
+| `fingertip_friction_slide` (μ) | 0.1, 0.3, **0.6**, 1.0, 1.5 | not in DR |
+
+The eval envelope is **deliberately wider than each phase's training
+DR** on every covered axis — passing inside the DR range is the
+interpolation case; passing outside is the actual robustness test.
+
+### Per-axis result matrix
+
+| Axis | P0 result | P1 result | P2 result |
+|---|---|---|---|
+| drawer_slide_friction | all pass | all pass | all pass |
+| drawer_slide_damping | all pass | all pass | all pass |
+| drawer_base_mass_scale | all pass | all pass | all pass |
+| goal_depth | fails at -0.28 | fails at -0.28 | fails at -0.28 |
+| init_slide | all pass | all pass | all pass |
+| robot_base_x_offset | all pass | all pass | all pass |
+| init_joint_delta_deg | degrades 20°, fails 30° | **passes 30°, degrades 45°** | passes 20°, degrades 30° |
+| action_scale | only nominal passes | only nominal passes | only nominal passes |
+| arm_link_mass_pct | all pass (post regex-fix resweep) | all pass (resweep) | all pass (resweep) |
+| fingertip_friction_slide | all pass | all pass | all pass |
+
+(Pre-fix arm_link_mass_pct entries showed SR=0/episode_length=1 at every
+non-zero value — that was an `eval_sweep._override_arm_link_mass_pct`
+regex bug NaN'ing the eval, not a robustness failure. See cross-phase
+decision below.)
+
+### Observations / analysis
+
+1. **Most axes were never broken.** 8 of the 10 swept axes pass at
+   full envelope on the bare Phase 0 baseline (no DR at all), and stay
+   passing across phases. DR on those axes is solving a non-problem —
+   there was nothing to fix.
+
+2. **Only two axes have actual robustness gaps:**
+   `init_joint_delta_deg` and `action_scale`.
+   `goal_depth` at -0.28 is a workspace-reach limit, not really
+   addressable by DR.
+
+3. **Phase 1 was the only clean win.** Adding init-pose DR widened the
+   `init_joint_delta_deg` envelope 3-4× (10° → 30° passes; +0.50 SR at
+   30°) without any in-distribution cost or change on the other 9 axes.
+   That's a textbook DR result: target a known weak axis, train on a
+   wider distribution, gain robustness on that axis specifically.
+
+4. **Phase 2 was probably solving non-problems.** Drawer DR (friction,
+   damping, mass) couldn't help — every drawer axis was already at
+   SR=1.00 in P0 with no headroom to gain. Arm-link DR (±10%) couldn't
+   help either, because the policy is *already* robust to arm-mass
+   perturbations up to at least ±50% even without any DR
+   (post-regex-fix resweep). So the only real effect Phase 2 could have
+   was potential negative — and the init_joint regression vs P1 (94%
+   pass at 30° → 69% degraded at 30°) is most likely undertraining
+   (2700 iters vs P1's 3888) rather than a DR-curriculum interaction.
+
+5. **The arm-link "fail at 10%" result was a regex NaN bug, not a real
+   robustness failure.** Both the training-time DR
+   (`open_drawer_osc.py:_apply_phase_knobs`) and the eval-time
+   perturbation (`eval_sweep._override_arm_link_mass_pct`) used a broad
+   `r".*_link"` body-name regex, which matched the Kinova's massless
+   `end_effector_link` (mass=0, zero inertia → `pseudo_inertia` produces
+   NaN) and the gripper `*_spring_link` finger bodies. The
+   training-side bug was caught at iter 0 (Phase 2 NaN'd) and fixed.
+   The eval-side bug went undetected because the symptom (SR=0 at every
+   non-zero perturbation) looked like a believable "policy can't handle
+   arm mass changes" failure mode — but the simultaneous
+   `mean_episode_length=1.00` was the giveaway: the policy couldn't
+   even take one step. Re-sweep with the fixed regex shows SR=1.0 at
+   every test value across all three phases.
+
+6. **`action_scale` is brittle in all phases.** Only nominal 0.01
+   passes; 0.005 fails (too slow to reach goal in 100 steps), 0.02 +
+   0.05 fail (overshoot/chaos). DR didn't help here because it's an
+   action-API hyperparameter, not a physics axis. Phase 3
+   (slow-execution / velocity penalty) is the right intervention —
+   reducing reliance on large velocity excursions should indirectly
+   tighten the action_scale envelope.
+
+7. **Plateau ceiling is structural.** All three phases converge to
+   dwell-SR ≈ 0.77 regardless of DR. The bottleneck is OSC controller
+   resolution + reward shape (`goal_precise` Gaussian std=0.05 m), not
+   data diversity. Pushing past 0.77 needs reward / controller changes,
+   not more DR.
+
+### Implications for the plan
+
+- **Drop Phase 2 deltas from the deploy stack.** Drawer DR is a no-op
+  (nothing to fix), arm-link DR is a no-op (already robust), and the
+  shorter training risks regressing P1's gains.
+- **Phase 1 stays** as the only DR floor for Phase 3+.
+- **Phase 3 (slow-execution) targets the actual remaining gap**
+  (`action_scale` brittleness + safety on the real arm). Pick 3a
+  (quadratic velocity penalty) first — least invasive, cleanest
+  comparison vs Phase 1.
+- **Phase 4 (deploy)** = Phase 1 + Phase 3 keeper. No drawer DR, no
+  arm-link DR.
+
+---
+
 ### Phase 3 — slow-execution / safety-aware (planned)
 
 - **Hypothesis:** A real Kinova at high joint velocities is unsafe.
@@ -392,6 +528,28 @@ Training trajectory (mso8ooz7, early-cancelled at iter ~2700):
   doesn't show up as a robustness gap in our sweep envelope. Could
   drop these from a future deploy run unless we widen the swept
   values further.
+- **2026-04-29** — **Caught a second instance of the
+  `r".*_link"` regex bug — this time in the eval sweep**
+  (`eval_sweep._override_arm_link_mass_pct`). Same failure mode as
+  the Phase 2 training-time NaN: matching `end_effector_link`
+  (mass=0) and gripper `*_spring_link` bodies makes `pseudo_inertia`
+  produce NaN, which crashes the policy at step 1. So **every "fail
+  at any non-zero arm_mass perturbation" result in the original P0/P1/
+  P2 sweeps was a NaN-eval bug, not a real robustness failure.**
+  Fixed regex (anchored arm-only set, same as training-time fix) and
+  re-swept all three checkpoints. **Result: P0 baseline already passes
+  arm_link_mass at 0%, 10%, 25%, AND 50% perturbation, all SR=1.00.**
+  The policy is fully robust to arm-mass perturbations even without
+  any DR training. **Phase 2's arm-link DR was solving a non-problem.**
+- **2026-04-29** — **Revised plan-level read.** Combining the regex
+  fix with the existing per-axis matrix: 8 of 10 axes were never
+  broken on the bare baseline. Only `init_joint_delta_deg` and
+  `action_scale` are real robustness gaps. Phase 1 already fixed the
+  first one. Phase 2 (drawer + arm DR) was solving non-problems and
+  marginally regressed `init_joint_delta_deg` due to undertraining
+  at 2700 iters. **Decision: drop Phase 2 deltas entirely from the
+  deploy stack.** Phase 1 is the DR floor. Phase 3 (slow-execution)
+  is the next real experiment, targeting the action_scale gap.
 
 ## Cross-phase training-curve comparison
 
