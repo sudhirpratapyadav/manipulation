@@ -47,7 +47,7 @@ variation) so robustness/regression on each lever is causally attributable.
 |---|---|---|---|---|---|---|---|
 | ref | (none) | — | — | [cmxw5ysd](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/cmxw5ysd) | **done** | **0.657** (mean SR iter 4800-4999, model_4999.pt) | 10h35m wall, 7.6 s/iter, no NaN |
 | A | `num_envs` | 8192 | 8× more parallel envs | [xzq0b2ft](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/xzq0b2ft) | running | iter 1005: 0.76 (curriculum 20% ramped) | 17.5s/iter, ETA ~24h |
-| B | `num_steps_per_env` | 48 | 2× longer rollouts | [v69rmqca](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/v69rmqca) | running | iter 177: 0.09 (still in warmup) | 13.5s/iter, ETA ~19h |
+| B | `num_steps_per_env` | 48 | 2× longer rollouts | [v69rmqca](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/v69rmqca) | running | iter 1063: 0.69; curriculum at 24.7° (2× faster than ref due to bug — see notes) | 15s/iter, ETA ~17h |
 
 ## Per-experiment notes
 
@@ -69,6 +69,25 @@ drawer ±19cm, base ±4.6cm.
   update), at the cost of ~8× wall-clock per iter.
 - **Risk:** GPU memory pressure. Mujoco_warp scales linearly with envs, so
   ~8× more state. May OOM on a single GPU.
+
+### Bug noticed in B (num_steps_per_env=48)
+
+The baseline_dr curriculum function divides `env.common_step_counter` by a
+hardcoded `num_steps_per_env=24` to convert env-steps → PPO iter. With the
+variant running `num_steps_per_env=48`, the curriculum sees a 2× higher iter
+count than the actual training iter. Consequence: at real-iter 1063, the
+curriculum is already at "iter 2126" thresholds (jdelta ramped to 24.7°
+instead of where the ref had it at 1063). So the curriculum hits its
+end-state at real-iter ~1500 instead of iter ~3000.
+
+This **doesn't invalidate the run** — the curriculum still ramps and ends in
+the right place; it just takes half as long in real iters. The remaining
+3500 iters at full distribution width are still useful for plateau
+consolidation. Not relaunching since 4h training would be lost.
+
+**Fix to apply later:** make the curriculum's `num_steps_per_env` argument
+read from `env.cfg.algorithm.num_steps_per_env` (or pass it through the
+launcher) rather than hardcoded 24. Document under future work.
 
 ### B — `num_steps_per_env=48`
 
