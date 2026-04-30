@@ -52,7 +52,7 @@ import viser
 from scipy.spatial.transform import Rotation
 
 from hardware import KinovaHardware
-from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML, get_assets
+from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML
 from policy import PolicyAgent
 from pynput import keyboard as pynput_kb
 from viewer import ViserMujocoScene
@@ -726,7 +726,6 @@ def main():
     # ── MuJoCo sim ─────────────────────────────────────────────────────────
     def _compile_model():
         spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
         return spec.compile()
 
     mj_model     = _compile_model()

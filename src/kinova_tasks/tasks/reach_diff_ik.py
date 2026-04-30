@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import mujoco
 import torch
 
-from kinova_tasks.assets.kinova_gen3.kinova_constants import get_assets
 from kinova_tasks.tasks.base_rl_cfg import kinova_ppo_runner_cfg
 from mjlab.actuator import IdealPdActuatorCfg
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
@@ -73,7 +72,6 @@ def _get_no_gripper_spec() -> mujoco.MjSpec:
     add its own (position-target-based) motor actuators without conflicts.
     """
     spec = mujoco.MjSpec.from_file(str(_NO_GRIPPER_XML))
-    spec.assets = get_assets(spec.meshdir)
     for act in list(spec.actuators):
         spec.delete(act)
     return spec

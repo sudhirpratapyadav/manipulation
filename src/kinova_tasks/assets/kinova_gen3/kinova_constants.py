@@ -3,9 +3,8 @@
 from pathlib import Path
 import mujoco
 
-from mjlab.actuator import XmlMotorActuatorCfg, XmlPositionActuatorCfg
+from mjlab.actuator import XmlActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.utils.os import update_assets
 
 ##
 # MJCF and assets.
@@ -17,21 +16,12 @@ KINOVA_GEN3_GRIPPER_TORQUE_XML: Path = _HERE / "xmls" / "gen3_gripper_torque.xml
 KINOVA_GEN3_NO_GRIPPER_XML: Path = _HERE / "xmls" / "gen3_no_gripper_torque.xml"
 
 
-def get_assets(meshdir: str) -> dict[str, bytes]:
-    """Load Kinova Gen3 mesh assets."""
-    assets: dict[str, bytes] = {}
-    update_assets(assets, KINOVA_GEN3_GRIPPER_XML.parent / "assets", meshdir)
-    return assets
-
-
 def get_spec() -> mujoco.MjSpec:
     """Load Kinova Gen3 with Robotiq 2F-85 gripper for position control.
 
     Includes the 7-DOF arm with position actuators plus the parallel gripper mechanism.
     """
-    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_XML))
 
 
 ##
@@ -136,8 +126,9 @@ INIT_STATE_PEGINHOLE = EntityCfg.InitialStateCfg(
 # gen3_gripper.xml declares the 7 arm <position> actuators; fingers_actuator
 # is a <general> tendon actuator and is intentionally not part of articulation.
 # (target_names_expr matches joint names, so the fingers tendon is filtered out.)
-KINOVA_ACTUATORS = XmlPositionActuatorCfg(
+KINOVA_ACTUATORS = XmlActuatorCfg(
     target_names_expr=(".*",),  # Match all joints (arm + gripper finger joints)
+    command_field="position",
 )
 
 KINOVA_GRIPPER_ARTICULATION = EntityArticulationInfoCfg(
@@ -214,21 +205,18 @@ INIT_STATE_NO_GRIPPER = EntityCfg.InitialStateCfg(
 
 def get_no_gripper_spec() -> mujoco.MjSpec:
     """Load Kinova Gen3 arm without gripper using native torque actuators."""
-    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_NO_GRIPPER_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(KINOVA_GEN3_NO_GRIPPER_XML))
 
 
 def get_gripper_torque_spec() -> mujoco.MjSpec:
     """Load Kinova Gen3 with Robotiq 2F-85 gripper using torque actuators for the arm."""
-    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_TORQUE_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_TORQUE_XML))
 
 
 # gen3_no_gripper_torque.xml declares the 7 arm joints as <motor> torque actuators.
-KINOVA_NO_GRIPPER_ACTUATORS = XmlMotorActuatorCfg(
+KINOVA_NO_GRIPPER_ACTUATORS = XmlActuatorCfg(
     target_names_expr=("joint_.*",),
+    command_field="effort",
 )
 
 KINOVA_NO_GRIPPER_ARTICULATION = EntityArticulationInfoCfg(
@@ -257,8 +245,9 @@ def get_kinova_no_gripper_robot_cfg() -> EntityCfg:
 # gen3_gripper_torque.xml declares the 7 arm joints as <motor> torque actuators.
 # fingers_actuator is a tendon-based <general> actuator controlled separately
 # via write_ctrl (SceneEntityCfg with actuator_names), not through articulation.
-KINOVA_GRIPPER_TORQUE_ARM_ACTUATORS = XmlMotorActuatorCfg(
+KINOVA_GRIPPER_TORQUE_ARM_ACTUATORS = XmlActuatorCfg(
     target_names_expr=("joint_.*",),
+    command_field="effort",
 )
 
 KINOVA_GRIPPER_TORQUE_ARTICULATION = EntityArticulationInfoCfg(

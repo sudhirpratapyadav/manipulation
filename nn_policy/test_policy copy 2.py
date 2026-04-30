@@ -38,8 +38,8 @@ import torch
 import viser
 from scipy.spatial.transform import Rotation
 
-from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML, get_assets
-from mjlab.actuator import XmlMotorActuatorCfg
+from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML
+from mjlab.actuator import XmlActuatorCfg
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
 from mjlab.envs.mdp.actions.actions import JointEffortActionCfg
 from mjlab.sim.sim import MujocoCfg, Simulation, SimulationCfg
@@ -526,16 +526,14 @@ def main():
 
     # ── Sim ────────────────────────────────────────────────────────────────
     def get_spec():
-        spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
-        return spec
+        return mujoco.MjSpec.from_file(str(_TORQUE_XML))
 
     robot_cfg = EntityCfg(
         init_state=DEMO_INIT_STATE,
         collisions=(),
         spec_fn=get_spec,
         articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            actuators=(XmlActuatorCfg(target_names_expr=("joint_.*",), command_field="effort"),),
             soft_joint_pos_limit_factor=0.9,
         ),
     )

@@ -41,7 +41,7 @@ if _ROOT_DIR not in sys.path:
 
 import mujoco
 import numpy as np
-from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML, get_assets
+from kinova_tasks.assets.kinova_gen3.kinova_constants import KINOVA_GEN3_GRIPPER_XML
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 _TORQUE_XML      = KINOVA_GEN3_GRIPPER_XML.parent / "gen3_gripper_torque.xml"
@@ -199,7 +199,7 @@ def sim_process_fn(shm_names: dict, events: dict, device: str) -> None:
     import torch
     from types import SimpleNamespace
     from scipy.spatial.transform import Rotation
-    from mjlab.actuator import XmlMotorActuatorCfg
+    from mjlab.actuator import XmlActuatorCfg
     from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
     from mjlab.envs.mdp.actions.actions import JointEffortActionCfg
     from mjlab.sim.sim import MujocoCfg, Simulation, SimulationCfg
@@ -212,15 +212,13 @@ def sim_process_fn(shm_names: dict, events: dict, device: str) -> None:
     nbody = shm['body_xpos'].shape[0]
 
     def get_spec():
-        spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
-        return spec
+        return mujoco.MjSpec.from_file(str(_TORQUE_XML))
 
     init_state = EntityCfg.InitialStateCfg(pos=(0,0,0), joint_pos=DEMO_JOINT_POS, joint_vel={".*": 0.0})
     robot_cfg  = EntityCfg(
         init_state=init_state, collisions=(), spec_fn=get_spec,
         articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            actuators=(XmlActuatorCfg(target_names_expr=("joint_.*",), command_field="effort"),),
             soft_joint_pos_limit_factor=0.9,
         ),
     )
@@ -403,17 +401,15 @@ def viz_process_fn(shm_names: dict, events: dict, checkpoint: str) -> None:
     shm_handles, shm = _attach_shm(shm_names)
 
     # Compile arm model through Entity so body IDs match the sim process exactly
-    from mjlab.actuator import XmlMotorActuatorCfg
+    from mjlab.actuator import XmlActuatorCfg
     from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
     def get_spec():
-        spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
-        return spec
+        return mujoco.MjSpec.from_file(str(_TORQUE_XML))
     _arm_cfg = EntityCfg(
         init_state=EntityCfg.InitialStateCfg(pos=(0,0,0), joint_pos=DEMO_JOINT_POS, joint_vel={".*": 0.0}),
         collisions=(), spec_fn=get_spec,
         articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            actuators=(XmlActuatorCfg(target_names_expr=("joint_.*",), command_field="effort"),),
             soft_joint_pos_limit_factor=0.9,
         ),
     )
@@ -529,17 +525,15 @@ def main():
 
     # Get nbody via Entity.compile() — must match what the sim process uses.
     # Entity.compile() calls spec_fn() + MjSpec.compile() (no warp/GPU init).
-    from mjlab.actuator import XmlMotorActuatorCfg
+    from mjlab.actuator import XmlActuatorCfg
     from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
     def _get_spec():
-        spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
-        return spec
+        return mujoco.MjSpec.from_file(str(_TORQUE_XML))
     _tmp_cfg = EntityCfg(
         init_state=EntityCfg.InitialStateCfg(pos=(0,0,0), joint_pos=DEMO_JOINT_POS, joint_vel={".*": 0.0}),
         collisions=(), spec_fn=_get_spec,
         articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            actuators=(XmlActuatorCfg(target_names_expr=("joint_.*",), command_field="effort"),),
             soft_joint_pos_limit_factor=0.9,
         ),
     )

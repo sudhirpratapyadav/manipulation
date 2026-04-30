@@ -51,7 +51,6 @@ from scipy.spatial.transform import Rotation
 # cluster. The duplicated values must stay in sync with that script.
 from kinova_tasks.assets.kinova_gen3.kinova_constants import (
     KINOVA_GEN3_GRIPPER_TORQUE_XML,
-    get_assets,
 )
 from kinova_tasks.assets.objects.articulated.drawer.drawer_constants import (
     DRAWER_XML,
@@ -298,7 +297,6 @@ def default_settings() -> list[Setting]:
 def _compile_drawer_scene() -> mujoco.MjModel:
     """Build the same Kinova + drawer scene that ``sim2real_open_drawer_osc.py`` uses."""
     spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-    spec.assets = get_assets(spec.meshdir)
     floor = spec.worldbody.add_geom()
     floor.name = "floor"
     floor.type = mujoco.mjtGeom.mjGEOM_PLANE

@@ -55,7 +55,6 @@ from scipy.spatial.transform import Rotation
 from hardware import KinovaHardware
 from kinova_tasks.assets.kinova_gen3.kinova_constants import (
     KINOVA_GEN3_GRIPPER_TORQUE_XML,
-    get_assets,
 )
 from kinova_tasks.assets.objects.free.cube.cube_constants import CUBE_XML
 from policy import PolicyAgent
@@ -939,7 +938,6 @@ def main():
     # ── MuJoCo sim ─────────────────────────────────────────────────────────────
     def _compile_model():
         spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
         # Add a floor plane so the cube has something to rest on
         floor = spec.worldbody.add_geom()
         floor.name = "floor"

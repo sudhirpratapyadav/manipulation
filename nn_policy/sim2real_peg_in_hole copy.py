@@ -48,7 +48,6 @@ from scipy.spatial.transform import Rotation
 from hardware import KinovaHardware
 from kinova_tasks.assets.kinova_gen3.kinova_constants import (
     KINOVA_GEN3_GRIPPER_TORQUE_XML,
-    get_assets,
 )
 from kinova_tasks.assets.peg_in_hole import HOLE_XML, PEG_XML
 from policy import PolicyAgent
@@ -786,7 +785,6 @@ def main():
     # ── MuJoCo sim ─────────────────────────────────────────────────────────────
     def _compile_model():
         spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-        spec.assets = get_assets(spec.meshdir)
         # Attach peg (freejoint body) and hole (mocap body) to worldbody
         peg_spec  = mujoco.MjSpec.from_file(str(PEG_XML))
         hole_spec = mujoco.MjSpec.from_file(str(HOLE_XML))

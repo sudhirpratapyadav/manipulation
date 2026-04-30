@@ -45,9 +45,8 @@ from scipy.spatial.transform import Rotation
 from kinova_tasks.assets.kinova_gen3.kinova_constants import (
     KINOVA_GEN3_GRIPPER_XML,
     KINOVA_GRIPPER_ARTICULATION,
-    get_assets,
 )
-from mjlab.actuator import XmlMotorActuatorCfg
+from mjlab.actuator import XmlActuatorCfg
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
 from mjlab.envs.mdp.actions import DifferentialIKAction, DifferentialIKActionCfg
 from mjlab.envs.mdp.actions.actions import JointEffortActionCfg
@@ -62,16 +61,12 @@ _ARM_JOINT_NAMES = [f"joint_{i}" for i in range(1, 8)]
 
 def _get_sim1_spec() -> mujoco.MjSpec:
     """Position-actuator spec for Sim 1 (inbuilt DifferentialIKAction)."""
-    spec = mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(KINOVA_GEN3_GRIPPER_XML))
 
 
 def _get_sim2_spec() -> mujoco.MjSpec:
     """Torque-actuator spec for Sim 2 (Pinocchio diff-IK)."""
-    spec = mujoco.MjSpec.from_file(str(_TORQUE_XML))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(_TORQUE_XML))
 
 
 # ── Sim initial state — matches HOME_DEG ──────────────────────────────────────
@@ -256,7 +251,7 @@ def sim2_process_fn(control_hz,
         collisions=(),
         spec_fn=_get_sim2_spec,
         articulation=EntityArticulationInfoCfg(
-            actuators=(XmlMotorActuatorCfg(target_names_expr=("joint_.*",)),),
+            actuators=(XmlActuatorCfg(target_names_expr=("joint_.*",), command_field="effort"),),
             soft_joint_pos_limit_factor=0.9,
         ),
     )
