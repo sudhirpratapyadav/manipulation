@@ -52,18 +52,17 @@ Notes: <free-form>
 
 ## Status
 
-**Next pending:** baseline_dr training (Phase 1 + drawer DR + curriculum
-widening), then OOD sweep on baseline_dr, then Phase 3 (slow-execution).
-Phase 2 (drawer + arm-link DR, fixed) returned 0.721 — *worse* than
-Phase 1's 0.746. Eval-sweep harness bug post-mortem: the original
-`r".*_link"` regex NaN'd every arm_link_mass test perturbation; resweep
-with fixed regex shows P0 already passes arm_mass at +/-50%. Combined
-with the 8-axis extended sweep also returning robustness=1.0 on both P0
-and P1, the conclusion is that the OSC controller absorbs essentially
-all physical perturbations transparently — physics DR doesn't help.
-The only real robustness gap on the eval is `init_joint_delta_deg`, fixed
-by Phase 1. baseline_dr is meant to push that further via curriculum
-widening of init distribution.
+**Next pending:** baseline_dr_v2 training (job-step 18278.51) +
+baseline_dr_rollout48 (18278.48) running in parallel; OOD sweeps on
+both deferred until GPUs free. baseline_dr ref already complete (SR
+plateau 0.657, model_4999.pt). Phase 2 dropped from deploy stack
+(arm-link DR was a non-issue, drawer DR no headroom). Phase 3
+slow-execution still pending; will run after baseline_dr_v2 plateaus.
+
+Active runs:
+- 18278.27 (wedged, no PIDs — admin-clearable only)
+- 18278.48 — `rollout48` variant, ~iter 1500/5000, ETA ~12h
+- 18278.51 — `baseline_dr_v2`, just launched, ETA ~10-11h
 
 Holder: `slurm/holder_3gpu.sh` job **18278**. To resume, follow
 `AGENT.md` § "Resume sequence".
@@ -189,6 +188,65 @@ Holder: `slurm/holder_3gpu.sh` job **18278**. To resume, follow
   NaN, curriculum ramps cleanly across the full schedule. Task ID
   `Mjlab-Open-Drawer-Osc-Kinova-BaselineDr`, launcher
   `slurm/open_drawer_osc_baseline_dr.sh`, run-name `baseline_dr`.
+- **2026-04-29 ~22:30** — **baseline_dr v1 launched then cancelled
+  after 7 iters because the curriculum thresholds were in
+  common_step_counter units, not PPO iters.** With
+  `num_steps_per_env=24`, common_step_counter increments 24× faster
+  than visible iter, so warmup ended at iter ~21 instead of iter
+  500. Refactored the 3 baseline_dr curriculum funcs to share a
+  `_ramp_by_iter` helper that converts common_step_counter →
+  train_iter before applying thresholds. Smoke-tested again, then
+  relaunched as job-step 18278.38. Commit c5b5933.
+- **2026-04-30 ~02:00** — **baseline_dr ref training complete.**
+  10h35m wall-time, 5000 iters, no NaN. Plateau SR
+  (mean iter 4800-4999) = **0.657**. Checkpoint `model_4999.pt`,
+  W&B `cmxw5ysd`. SR is lower than Phase 1's 0.773 — that's the
+  expected cost of widening the init distribution. Real comparison
+  is the OOD sweep robustness, deferred until a GPU frees up.
+- **2026-04-30 ~03:00** — **Two hyperparam variants launched in
+  parallel** to test algorithmic levers on the wider distribution:
+  `baseline_dr_envs8192` (num_envs 1024 → 8192) and
+  `baseline_dr_rollout48` (num_steps_per_env 24 → 48). New tracker
+  `docs/hyperparam_experiments.md` introduced — separates
+  PPO/env-config variations from DR/reward/obs variations
+  (rl_experiments_log.md). Initial signs: envs8192 reaching higher
+  SR earlier than the ref. **Bug noticed in rollout48:** the
+  baseline_dr curriculum's `num_steps_per_env=24` is hardcoded, so
+  with the variant running at 48, the curriculum ramps to end-state
+  at real-iter ~1500 instead of 3000. Not catastrophic (still ramps
+  cleanly), left running. Document to fix later.
+- **2026-04-30 ~13:25** — **baseline_dr_v2 implemented.** Built on
+  baseline_dr with two new training-time DR additions:
+  **(1) Lengthen the drawer.** XML `drawer_slide` joint range
+  `-0.25 → -0.40` m. Goal range `[-0.25, -0.15] → [-0.35, -0.10]` m
+  so policy sees both shorter (10 cm) and longer (35 cm) pulls. No
+  curriculum on this — drawer length is a property of the cabinet,
+  not a learning gradient.
+  **(2) Stepped impulse curriculum on drawer base body.** Random
+  3D-direction impulse via mjlab `apply_body_impulse`, magnitude
+  steps at iters 300/400/500/600/700 → 3/6/9/12/15 N peak. Cooldown
+  0.3-1.0 s, duration 0.05-0.15 s (~2-5 impulses per 2.5s episode
+  at peak). **Motivation:** baseline_dr videos showed
+  gripper-always-open behavior (policy hooks handle with open
+  fingers and drags by friction) — a sim2real failure mode since
+  the open-gripper "cage" geometry isn't reliable on the real
+  Robotiq under finger-tilt or surface variation. Forcing impulses
+  requires the policy to close the gripper around the handle to
+  maintain control. Smoke-tested on GPU: no NaN at peak impulse
+  (15 N), all 4 curricula (drawer cube, joint init, base pose,
+  impulse) ramp on schedule. Task ID
+  `Mjlab-Open-Drawer-Osc-Kinova-BaselineDrV2`, launcher
+  `slurm/open_drawer_osc_baseline_dr_v2.sh`, run-name
+  `baseline_dr_v2`. Commit 683a6df.
+- **2026-04-30 ~13:30** — **Cancelled envs8192 (job-step 18278.47)
+  at iter ~1830 to free GPU for baseline_dr_v2.** envs8192 was on
+  track to plateau higher than ref's 0.657 (last logged SR=0.75 at
+  53% curriculum ramp), but the cancelled-too-early data is
+  documented in `hyperparam_experiments.md`; v2 is the higher-value
+  experiment because it adds *new training signal* (impulses +
+  longer drawer) rather than just changing algorithmic compute
+  scale. Launched baseline_dr_v2 as job-step 18278.51. Commit
+  966b1b2.
 
 ## Run history
 

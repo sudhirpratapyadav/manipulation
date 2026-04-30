@@ -585,7 +585,82 @@ Files: `docs/results/new_axes_p0/{sweep_summary.csv,breaking_points.md}`,
   at 30° and 45° — Phase 1 passes 30°, degrades 45°. baseline_dr should
   **pass 45°** if the curriculum worked. Also expect SR=1.0 across
   the full drawer position cube at eval.
-- **Status:** ready to launch.
+- **Status:** **complete.** 5000 iters, 10h35m wall-time, no NaN.
+  Plateau SR (mean iter 4800-4999) = **0.657**. Checkpoint
+  `model_4999.pt`. W&B run [`cmxw5ysd`](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/cmxw5ysd).
+  SR is lower than Phase 1's 0.773 plateau — that's the cost of
+  widening the init distribution (jdelta 15→30°, drawer ±10→20cm,
+  base ±2→5cm). The right comparison is OOD-sweep robustness on the
+  Phase 1 envelope, not the in-dist plateau number.
+
+---
+
+### baseline_dr_v2 — baseline_dr + longer drawer + impulse curriculum (running)
+
+- **Hypothesis:** Two related sim2real concerns visible in `baseline_dr`
+  videos and breaking points:
+  1. The **gripper stays open** through the whole episode in baseline_dr —
+     the policy just hooks the handle with the open fingers and drags.
+     This is a sim-only trick that probably won't survive on the real
+     arm because slight grasp instability would cause the handle to slip
+     out of the open cage.
+  2. The drawer goal range `[-0.25, -0.15]` is narrow — the trained
+     policy only ever saw 15-25 cm pulls. A real cabinet might require
+     pulling out 5-10 cm (small drawer) or 30+ cm (deep drawer).
+- **Change vs. baseline_dr:**
+  1. **Lengthen the drawer.** XML `drawer_slide` joint range
+     `-0.25 → -0.40` m (40 cm max travel). Goal range
+     `[-0.25, -0.15] → [-0.35, -0.10]` m. **No curriculum** on this —
+     the joint range is a property of the cabinet, not a learning
+     gradient; sample full range from iter 0.
+  2. **Stepped impulse curriculum on the drawer base body.** Random
+     direction per impulse (uniform in 3D), magnitude varies by stage:
+
+     | PPO iter | Force per axis (N) |
+     |---|---|
+     | 0–299 | 0 (off — match baseline_dr early phase) |
+     | 300–399 | ±3 |
+     | 400–499 | ±6 |
+     | 500–599 | ±9 |
+     | 600–699 | ±12 |
+     | 700+ | **±15** (peak, frozen) |
+
+     Each impulse fires for 0.05–0.15 s (1–6 control steps), cooldown
+     0.3–1.0 s — so ~2-5 impulses per 2.5s episode at peak.
+  3. Inherits baseline_dr's init-pose curriculum verbatim
+     (drawer cube 0.10→0.20 m, jdelta 15°→30°, base 2cm→5cm and
+     2°→10°, all between iter 500 and 3000).
+- **Why stepped, not linear, for impulse?** A linear ramp from iter 0
+  would crush early learning before the reach-and-grasp policy
+  stabilizes. 300 iters of impulse-free training matches what we know
+  is the time the policy needs to get past the random-flailing phase.
+- **Why peak 15 N?** Drawer base mass ≈ 2 kg in sim, applied for ~0.1 s
+  → impulse ≈ 1.5 N·s, velocity change ≈ 0.75 m/s in worst case.
+  Realistic for a "human bumps the cabinet" disturbance; not so violent
+  that the drawer escapes the policy's reach.
+- **Run name:** `baseline_dr_v2`
+- **Task ID:** `Mjlab-Open-Drawer-Osc-Kinova-BaselineDrV2`
+- **Launch:** `slurm/open_drawer_osc_baseline_dr_v2.sh` (5000 iters,
+  num_envs=1024, tags `("baseline_dr_v2","longer_drawer","impulse_curriculum")`).
+- **Decision criteria:**
+  1. **Plateau SR vs baseline_dr (0.657).** A higher plateau under
+     wider drawer goal + impulses would be a strong sign the policy
+     learned something genuinely robust.
+  2. **Gripper-state behavior in videos.** Does the policy now close
+     the gripper around the handle to resist impulses, or does it
+     keep dragging with open fingers and accept the occasional drop?
+  3. **OOD sweep robustness, especially `drawer_impulse` axis.**
+     baseline_dr already passes this axis at SR=1.0 in eval, so the
+     test is whether v2 can survive even higher impulse magnitudes
+     (sweep axis tops out at 4×10N — could push higher in a follow-up
+     sweep).
+  4. **Goal-range generalization.** Eval needs a new axis — sample
+     goal slide at extreme values (-0.40, -0.05) and see if the
+     policy still pulls correctly.
+- **Status:** running on job-step 18278.51, ETA ~10-11h based on
+  baseline_dr's 7s/iter pace. Curriculum smoke-tested — env builds,
+  no NaN at peak impulse (15 N), all 4 curricula (drawer cube, joint
+  init, base pose, impulse) ramp at expected iter thresholds.
 
 ---
 
@@ -719,6 +794,28 @@ Files: `docs/results/new_axes_p0/{sweep_summary.csv,breaking_points.md}`,
   physics it experiences. **Real sim2real risk is in OSC-controller
   mismatch (real robot's torque/velocity limits clipping the OSC
   output), which physics DR cannot probe.**
+- **2026-04-30** — **baseline_dr trained successfully (SR=0.657 plateau)
+  but videos show the policy keeps the gripper open the entire
+  episode.** It hooks the handle with the open fingertip cage and drags
+  the drawer by friction. This is fine in sim (high pad friction +
+  bilateral contact) but a sim2real risk on the real Robotiq — the
+  open-gripper "cage" geometry isn't reliable for handle hooking under
+  finger-tilt or surface variation. Inspecting the reward terms
+  confirms the cause: there's no `grasp` or `gripper_state` reward,
+  only object-to-goal position rewards. Closing the gripper just costs
+  `action_rate_l2` and `joint_vel_hinge` without any positive signal.
+  Two ways to fix: (a) add a reward shaping term for gripper-closed-
+  near-handle, (b) add training-time impulses on the drawer base so
+  the policy must close the gripper to maintain control. **Picked (b)
+  for `baseline_dr_v2`** — feels more like a real-world disturbance
+  pattern than a hand-crafted shaping reward.
+- **2026-04-30** — **baseline_dr's drawer goal range was [-0.25, -0.15]
+  m (only 15-25 cm pulls).** Real cabinets vary from short shallow
+  drawers (5-10 cm pulls) to deep ones (30+ cm). For
+  `baseline_dr_v2` widened the drawer XML joint range to 40 cm and the
+  goal sampling range to [-0.35, -0.10] (10-35 cm pulls). Sample full
+  range from iter 0 — no curriculum, since drawer length is a property
+  of the cabinet not a learning gradient.
 
 ## Cross-phase training-curve comparison
 
