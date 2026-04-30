@@ -661,6 +661,28 @@ Files: `docs/results/new_axes_p0/{sweep_summary.csv,breaking_points.md}`,
   baseline_dr's 7s/iter pace. Curriculum smoke-tested — env builds,
   no NaN at peak impulse (15 N), all 4 curricula (drawer cube, joint
   init, base pose, impulse) ramp at expected iter thresholds.
+- **2026-04-30 — BUG: impulse target was wrong.** Original config
+  applied `apply_body_impulse` to `drawer_base`, which is a **mocap
+  body**. MuJoCo ignores `xfrc_applied` on mocap bodies, so the
+  impulse curriculum was a **no-op** — the policy never actually saw
+  any disturbance during training. Discovered by visualizing the
+  arrows in viser play mode: arrows rendered at the cabinet, slider
+  did not respond. Fixed in `_install_baseline_dr_v2_extras` to
+  target `handle` (the sliding body with the `drawer_slide` joint).
+  Impact: run `mso8ooz7` was effectively `baseline_dr` + wider goal
+  range only, not `baseline_dr` + impulses. Need to re-train v2 with
+  the fix; old run still valid as a "wider-goal-only" datapoint.
+- **2026-04-30 — Reformulated impulse: per-step axial force.** Replaced
+  `apply_body_impulse` (trigger / sustain / cooldown lifecycle, random
+  3D direction) with a new task-local class `apply_axial_force_per_step`.
+  Force is resampled every env step, magnitude drawn from U(-amp, amp)
+  (gaussian also supported), direction locked to the slide axis (+x).
+  Curriculum still steps `amp` 0→3→6→9→12→15 N at iters
+  0/300/400/500/600/700. Rationale: original lifecycle made the
+  disturbance bursty and only loosely coupled to slide motion; pure
+  ±x force every step is a cleaner test of "policy must hold the
+  drawer against an axial push" and is what the user actually wants
+  for v2.
 
 ---
 

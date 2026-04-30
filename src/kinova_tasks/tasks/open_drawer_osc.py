@@ -1305,13 +1305,14 @@ def baseline_dr_v2_impulse_curriculum(
     env_ids: torch.Tensor,
     num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
-    """Stepped impulse-magnitude curriculum on the drawer base body.
+    """Stepped impulse-sigma curriculum on the drawer handle.
 
     At each PPO iter, picks the largest threshold value in
     ``_IMPULSE_STEPS_N`` that the iter has reached, and updates the
-    ``baseline_dr_v2_drawer_impulse`` event term's ``force_range`` to
-    ``(-amp, amp)`` so each component is uniformly sampled in that range
-    (vector direction is random per impulse trigger).
+    ``baseline_dr_v2_drawer_impulse`` event term's ``amp`` (interpreted
+    as sigma for the folded-normal distribution). The per-step force is
+    drawn from |N(0, sigma)| and applied along +x (push-closed) to
+    oppose the policy's pull-open action.
     """
     del env_ids
     train_iter = env.common_step_counter // num_steps_per_env
@@ -1320,12 +1321,8 @@ def baseline_dr_v2_impulse_curriculum(
         if train_iter >= thresh:
             amp = val
     term = env.event_manager.get_term_cfg("baseline_dr_v2_drawer_impulse")
-    if amp <= 0.0:
-        # Disabled — set zero force range so apply_body_impulse writes zeros.
-        term.params["force_range"] = (0.0, 0.0)
-    else:
-        term.params["force_range"] = (-amp, amp)
-    return {"impulse_amp_N": torch.tensor(amp)}
+    term.params["amp"] = float(amp)
+    return {"impulse_sigma_N": torch.tensor(amp)}
 
 
 def _baseline_dr_v2_knobs() -> PhaseKnobs:
@@ -1387,37 +1384,186 @@ def kinova_open_drawer_osc_baseline_dr_env_cfg(play: bool = False) -> ManagerBas
     return cfg
 
 
-def _install_baseline_dr_v2_extras(cfg: ManagerBasedRlEnvCfg) -> None:
+class apply_axial_force_per_step:
+    """Apply an axial force on selected bodies, resampled every step.
+
+    Unlike ``apply_body_impulse`` (trigger / sustain / cooldown lifecycle),
+    this term writes a fresh force on every env step. The force vector is
+    constrained to a single body-frame axis (default +x, the drawer slide
+    "close" direction) and the magnitude is always non-negative, so the
+    disturbance is purely "push the drawer closed against the policy"
+    without any off-axis or sign perturbation.
+
+    Magnitude (always >= 0) is sampled per-step per-env from one of:
+      - ``"uniform"``       : U(0, amp)
+      - ``"folded_normal"`` : |N(0, sigma)|, with amp = sigma. Optional
+        ``clip`` caps the magnitude (default 3*sigma — clips ~0.3% of
+        samples to keep extreme outliers from breaking sim).
+    """
+
+    @dataclass
+    class VizCfg:
+        rgba: tuple[float, float, float, float] = (1.0, 0.1, 0.9, 1.0)
+        scale: float = 0.05  # m per N
+        width: float = 0.02
+        min_force: float = 0.5
+
+    def __init__(self, cfg, env: ManagerBasedRlEnv):
+        self._asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+        self._body_ids = cfg.params["asset_cfg"].body_ids
+        self._num_envs = env.num_envs
+        self._device = env.device
+        self._viz_cfg: apply_axial_force_per_step.VizCfg = cfg.params.get(
+            "viz_cfg", apply_axial_force_per_step.VizCfg()
+        )
+        self._num_bodies = (
+            len(self._body_ids) if isinstance(self._body_ids, list)
+            else self._asset.num_bodies
+        )
+        # Last-applied force per env per body (for debug_vis).
+        self._last_force = torch.zeros(
+            (self._num_envs, self._num_bodies, 3), device=self._device
+        )
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        env_ids: torch.Tensor | None,
+        amp: float,
+        asset_cfg: SceneEntityCfg,
+        axis: tuple[float, float, float] = (1.0, 0.0, 0.0),
+        distribution: str = "folded_normal",
+        clip_sigmas: float = 3.0,
+    ) -> None:
+        del env, env_ids, asset_cfg
+        if amp <= 0.0:
+            self._last_force.zero_()
+            zeros = torch.zeros(
+                (self._num_envs, self._num_bodies, 3), device=self._device
+            )
+            self._asset.write_external_wrench_to_sim(
+                zeros, zeros, body_ids=self._body_ids
+            )
+            return
+
+        # Per-env non-negative scalar magnitude → applied along +axis.
+        if distribution == "uniform":
+            mag = torch.rand(self._num_envs, device=self._device) * amp
+        elif distribution == "folded_normal":
+            raw = torch.randn(self._num_envs, device=self._device) * amp
+            mag = raw.abs()
+            if clip_sigmas > 0.0:
+                mag = mag.clamp(max=clip_sigmas * amp)
+        else:
+            raise ValueError(f"Unknown distribution {distribution!r}")
+
+        axis_t = torch.tensor(axis, device=self._device, dtype=torch.float32)
+        # (N, 1, 3) * (N, 1, 1) → (N, num_bodies, 3) via broadcast on body dim.
+        forces = (
+            axis_t.view(1, 1, 3)
+            * mag.view(self._num_envs, 1, 1)
+        ).expand(self._num_envs, self._num_bodies, 3).contiguous()
+        torques = torch.zeros_like(forces)
+
+        self._last_force = forces
+        self._asset.write_external_wrench_to_sim(
+            forces, torques, body_ids=self._body_ids
+        )
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._last_force[env_ids] = 0.0
+
+    def debug_vis(self, visualizer) -> None:
+        viz = self._viz_cfg
+        min_sq = viz.min_force * viz.min_force
+        com_pos = self._asset.data.body_com_pos_w
+        for env_idx in visualizer.get_env_indices(self._num_envs):
+            for i in range(self._last_force.shape[1]):
+                force = self._last_force[env_idx, i]
+                if (force * force).sum().item() < min_sq:
+                    continue
+                start_np = com_pos[env_idx, i].cpu().numpy()
+                end_np = start_np + force.cpu().numpy() * viz.scale
+                visualizer.add_arrow(
+                    start=start_np, end=end_np,
+                    color=viz.rgba, width=viz.width,
+                )
+
+
+def _install_baseline_dr_v2_extras(
+    cfg: ManagerBasedRlEnvCfg, play: bool = False
+) -> None:
     """Install baseline_dr_v2 extras: longer drawer goal range + impulse + curriculum.
 
     Drawer XML hard limit was widened from -0.25 to -0.40 m
     (drawer.xml drawer_slide range). This factory widens the goal
     sampling range and adds the stepped-impulse curriculum.
-    """
-    import mjlab.envs.mdp.events as events
 
+    In play mode, the impulse `amp` is pinned to the peak value (last
+    entry of ``_IMPULSE_STEPS_N``) and no curriculum is registered, so
+    demos see end-of-training disturbance magnitudes from step 0.
+    """
     # Widen the drawer goal range (no curriculum — full range from iter 0).
     cmd_cfg = cfg.commands["drawer_goal"]
     cmd_cfg.slide_lo = _BASELINE_DR_V2_GOAL_LO
     cmd_cfg.slide_hi = _BASELINE_DR_V2_GOAL_HI
 
-    # Stepped impulse on the drawer base. The event term ticks every step;
-    # the curriculum function below mutates its force_range based on iter.
+    # Per-step axial force on the drawer handle. Direction is locked to
+    # +x (push-closed) so the disturbance always **opposes** the policy's
+    # pull-open action — never "helps" the drawer open. Magnitude is
+    # drawn each step from |N(0, sigma)| (folded normal, clipped at
+    # 3*sigma). Training mutates `amp` (= sigma) via the stepped
+    # curriculum; play pins it to the peak value.
+    if play:
+        amp = _IMPULSE_STEPS_N[-1][1]
+    else:
+        amp = 0.0  # mutated by curriculum during training
+
     cfg.events["baseline_dr_v2_drawer_impulse"] = EventTermCfg(
         mode="step",
-        func=events.apply_body_impulse,
+        func=apply_axial_force_per_step,
         params={
-            "asset_cfg": SceneEntityCfg("drawer", body_names=("drawer_base",)),
-            "force_range": (0.0, 0.0),  # mutated by curriculum
-            "torque_range": (0.0, 0.0),
-            "duration_s": (0.05, 0.15),
-            "cooldown_s": (0.3, 1.0),
+            # Target the `handle` body (the sliding drawer). drawer_base
+            # is a mocap body and ignores xfrc_applied — earlier v2 run
+            # mso8ooz7 had this misconfigured. See rl_experiments_log.md.
+            "asset_cfg": SceneEntityCfg("drawer", body_names=("handle",)),
+            "amp": amp,
+            "axis": (1.0, 0.0, 0.0),  # +x = push drawer closed
+            "distribution": "folded_normal",
+            "clip_sigmas": 3.0,
         },
     )
-    cfg.curriculum["baseline_dr_v2_impulse"] = CurriculumTermCfg(
-        func=baseline_dr_v2_impulse_curriculum,
-        params={},
-    )
+    if not play:
+        cfg.curriculum["baseline_dr_v2_impulse"] = CurriculumTermCfg(
+            func=baseline_dr_v2_impulse_curriculum,
+            params={},
+        )
+
+
+def _apply_baseline_dr_end_of_curriculum(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Pin reset-event params to baseline_dr's end-of-curriculum values.
+
+    Used by play-mode factories so demos reflect late-training init-pose
+    randomization (drawer cube 0.20 m half-extent, joint delta 30°,
+    base xy ±5 cm + yaw ±10°) without running the curriculum loop.
+    """
+    cx, cy, cz = _BASELINE_DR_DRAWER_CENTER
+    h = 0.20
+    cfg.events["reset_drawer"].params["x_range"] = (cx - h, cx + h)
+    cfg.events["reset_drawer"].params["y_range"] = (cy - h, cy + h)
+    cfg.events["reset_drawer"].params["z_range"] = (cz - h, cz + h)
+
+    cfg.events["reset_robot_joints"].params["joint_delta_deg"] = 30.0
+
+    xy = 0.05
+    yaw_rad = 10.0 * _DEG_TO_RAD
+    cfg.events["reset_base"].params["pose_range"] = {
+        "x":   (-xy, xy),
+        "y":   (-xy, xy),
+        "yaw": (-yaw_rad, yaw_rad),
+    }
 
 
 def kinova_open_drawer_osc_baseline_dr_v2_env_cfg(
@@ -1425,16 +1571,19 @@ def kinova_open_drawer_osc_baseline_dr_v2_env_cfg(
 ) -> ManagerBasedRlEnvCfg:
     """baseline_dr_v2: baseline_dr + longer drawer (10-35cm pull)
     + stepped impulse curriculum on drawer base.
+
+    Play mode pins all curricula (init-pose + impulse) to their
+    end-of-training values so demo rollouts match late-training conditions.
     """
     cfg = kinova_open_drawer_osc_env_cfg(
         play=play, phase_knobs=_baseline_dr_v2_knobs()
     )
     if not play:
         _install_baseline_dr_curriculum(cfg)
-        _install_baseline_dr_v2_extras(cfg)
+        _install_baseline_dr_v2_extras(cfg, play=False)
     else:
-        # Even in play mode, widen the goal range so demo videos match.
-        _install_baseline_dr_v2_extras(cfg)
+        _apply_baseline_dr_end_of_curriculum(cfg)
+        _install_baseline_dr_v2_extras(cfg, play=True)
     return cfg
 
 

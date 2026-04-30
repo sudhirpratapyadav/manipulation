@@ -81,17 +81,21 @@ HOME_DEG = np.array([90.0, 30.0, 0.0, 90.0, 0.0, 60.0, -90.0])
 
 # ── Cube spawn range — matches _CUBE_SPAWN_LO / _CUBE_SPAWN_HI from pick_cube_osc.py ──
 # Robot-local frame.  Real robot: randomised for now, will be replaced by perception.
-CUBE_SPAWN_X = (-0.05,  0.05)
-CUBE_SPAWN_Y = (-0.48, -0.52)
-CUBE_SPAWN_Z = ( 0.02, 0.03)
+# CUBE_SPAWN_X = (-0.05,  0.05)
+# CUBE_SPAWN_Y = (-0.48, -0.52)
+# CUBE_SPAWN_Z = ( 0.02, 0.03)
+
+CUBE_SPAWN_X = (-0.01,  0.01)
+CUBE_SPAWN_Y = (-0.5, -0.5)
+CUBE_SPAWN_Z = ( 0.02, 0.02)
 
 # CUBE_SPAWN_X = (-0.3,  0.3)
 # CUBE_SPAWN_Y = (-0.7, -0.3)
 # CUBE_SPAWN_Z = ( 0.02, 0.03)
 
 # ── Goal position range (robot-local frame, matches _GOAL_LO / _GOAL_HI) ──────
-GOAL_LO = np.array([-0.05, -0.48, 0.1])
-GOAL_HI = np.array([ 0.05, -0.52, 0.30])
+GOAL_LO = np.array([-0.05, -0.48, 0.30])
+GOAL_HI = np.array([ 0.05, -0.52, 0.40])
 
 # GOAL_LO = np.array([-0.30, -0.70, 0.05])
 # GOAL_HI = np.array([ 0.30, -0.30, 0.40])
@@ -112,6 +116,12 @@ TAU_OFFSETS_DEFAULT = np.array([0.0,  0.0,  -0.5, 0.0,  0.0, 1.0, 0.0])
 # ── Action scales — must match pick_cube_osc.py ───────────────────────────────
 DELTA_POS_SCALE = 0.005   # metres per unit action (half of training 0.01)
 DELTA_ORI_SCALE = 0.01    # rad per unit action (half of training 0.02)
+
+# ── Visualisation scales ───────────────────────────────────────────────────────
+VIS_ACTION_SCALE = 10.0   # multiply action delta for arrow length in viewer
+
+# ── Task success threshold ─────────────────────────────────────────────────────
+SUCCESS_THRESH = 0.008    # metres: cube-to-goal distance below which task is done
 
 # ── Gripper ctrl mapping: policy [-1, +1] → fingers_actuator [0, 255] ─────────
 GRIPPER_CTRL_MIN = 0.0
@@ -136,6 +146,10 @@ GAINS_KEYS = ["kp_pos", "kd_pos", "kp_ori", "kd_ori",
 def _np(shm: mp.Array) -> np.ndarray:
     """Zero-copy numpy view of a multiprocessing double Array."""
     return np.frombuffer(shm.get_obj(), dtype=np.float64)
+
+def _np_bool(shm: mp.Array) -> np.ndarray:
+    """Zero-copy numpy view of a multiprocessing bool Array."""
+    return np.frombuffer(shm.get_obj(), dtype=np.bool_)
 
 
 def _pack_gains(kp_pos, kd_pos, kp_ori, kd_ori,
@@ -386,6 +400,7 @@ def policy_process_fn(checkpoint_path, device_str, home_rad_arr,
                       shm_gripper_ctrl_sim,
                       shm_gripper_ctrl_real,
                       shm_policy_hz,
+                      shm_task_done,
                       policy_reset_event, reset_in_progress, stop_event):
     """Single policy forward pass with batch=2 (sim + real) at TARGET_HZ."""
     policy_agent     = PolicyAgent(checkpoint_path, device=device_str)
@@ -432,6 +447,16 @@ def policy_process_fn(checkpoint_path, device_str, home_rad_arr,
         cube_pos_real = _np(shm_cube_pos_real).copy()
         goal_pos      = _np(shm_goal_pos).copy()
 
+        # ── Task-done check: freeze if cube is close enough to goal ───────────
+        cube_to_goal_dist = float(np.linalg.norm(cube_pos_sim - goal_pos))
+        task_done = cube_to_goal_dist < SUCCESS_THRESH
+        _np_bool(shm_task_done)[0] = task_done
+        if task_done:
+            _np(shm_action_sim)[:]  = 0.0
+            _np(shm_action_real)[:] = 0.0
+            time.sleep(0.05)
+            continue
+
         # ── Read gripper driver joint positions ────────────────────────────────
         gripper_driver_sim  = float(_np(shm_gripper_driver_sim)[0])
         gripper_driver_real = float(_np(shm_gripper_driver_real)[0])
@@ -466,6 +491,7 @@ def policy_process_fn(checkpoint_path, device_str, home_rad_arr,
         _np(shm_action_sim)[:3] = action_sim[:3] * DELTA_POS_SCALE   # raw delta
         _np(shm_action_sim)[3:6] = osc_tgt_pos_sim - ee_pos_sim      # effective delta
         _np(shm_action_sim)[6]  = action_sim[6]                       # gripper raw
+        _np(shm_action_sim)[7:10] = action_sim[3:6] * DELTA_ORI_SCALE  # rot rotvec
 
         delta_rot_sim    = Rotation.from_rotvec(action_sim[3:6] * DELTA_ORI_SCALE)
         osc_tgt_quat_sim = (delta_rot_sim * Rotation.from_matrix(ee_rot_sim)).as_quat()
@@ -481,6 +507,7 @@ def policy_process_fn(checkpoint_path, device_str, home_rad_arr,
         _np(shm_action_real)[:3] = action_real[:3] * DELTA_POS_SCALE  # raw delta
         _np(shm_action_real)[3:6] = osc_tgt_pos_real - ee_pos_real    # effective delta
         _np(shm_action_real)[6]  = action_real[6]                      # gripper raw
+        _np(shm_action_real)[7:10] = action_real[3:6] * DELTA_ORI_SCALE  # rot rotvec
 
         delta_rot_real    = Rotation.from_rotvec(action_real[3:6] * DELTA_ORI_SCALE)
         osc_tgt_quat_real = (delta_rot_real * Rotation.from_matrix(ee_rot_real)).as_quat()
@@ -813,11 +840,11 @@ def main():
     shm_q_sim               = mp.Array(ctypes.c_double, 7)
     shm_dq_sim              = mp.Array(ctypes.c_double, 7)
     shm_osc_target_sim      = mp.Array(ctypes.c_double, 7)   # pos(3) + quat_xyzw(4)
-    shm_action_sim          = mp.Array(ctypes.c_double, 7)   # [:3] raw pos delta, [3:6] eff delta, [6] gripper
+    shm_action_sim          = mp.Array(ctypes.c_double, 10)  # [:3] raw pos delta, [3:6] eff delta, [6] gripper, [7:10] rot rotvec
     shm_q_real              = mp.Array(ctypes.c_double, 7)
     shm_dq_real             = mp.Array(ctypes.c_double, 7)
     shm_osc_target_real     = mp.Array(ctypes.c_double, 7)
-    shm_action_real         = mp.Array(ctypes.c_double, 7)
+    shm_action_real         = mp.Array(ctypes.c_double, 10)  # [:3] raw pos delta, [3:6] eff delta, [6] gripper, [7:10] rot rotvec
     shm_ws_lo               = mp.Array(ctypes.c_double, 3)
     shm_ws_hi               = mp.Array(ctypes.c_double, 3)
     shm_cube_pos_sim        = mp.Array(ctypes.c_double, 3)   # from MuJoCo physics
@@ -831,6 +858,7 @@ def main():
     shm_policy_hz           = mp.Array(ctypes.c_double, 1)
     shm_viz_hz              = mp.Array(ctypes.c_double, 1)
     shm_real_hz             = mp.Array(ctypes.c_double, 1)
+    shm_task_done           = mp.Array(ctypes.c_bool,   1)   # True when cube-to-goal < SUCCESS_THRESH
 
     _np(shm_gains)[:] = _pack_gains(KP_POS, KD_POS, KP_ORI, KD_ORI,
                                      POSTURE_KP, POSTURE_KD, POSTURE_WEIGHT)
@@ -901,6 +929,7 @@ def main():
               shm_gripper_ctrl_sim,
               shm_gripper_ctrl_real,
               shm_policy_hz,
+              shm_task_done,
               policy_reset_event, reset_in_progress, stop_event),
         daemon=True,
     )
@@ -987,9 +1016,10 @@ def main():
 
     # Goal marker sphere
     goal_marker = server.scene.add_icosphere(
-        "/goal_marker", radius=0.04,
+        "/goal_marker", radius=0.02,
         position=tuple(float(v) for v in goal_init),
         color=(1.0, 0.5, 0.0),
+        opacity=0.4,
     )
 
     # Real cube marker (randomised position, not from physics) — hidden in sim-only
@@ -1016,9 +1046,16 @@ def main():
     eff_arrow_real = server.scene.add_mesh_simple(
         "/real_eff_action", vertices=_av0.copy(),  faces=_af0,
         color=(0.20, 0.90, 0.3), side="double")
+    rot_arrow_sim  = server.scene.add_mesh_simple(
+        "/sim_rot_action",  vertices=_av0.copy(),  faces=_af0,
+        color=(0.70, 0.20, 1.0), side="double")   # purple
+    rot_arrow_real = server.scene.add_mesh_simple(
+        "/real_rot_action", vertices=_av0.copy(),  faces=_af0,
+        color=(0.20, 0.90, 1.0), side="double")   # cyan
     if args.sim_only:
         raw_arrow_real.visible = False
         eff_arrow_real.visible = False
+        rot_arrow_real.visible = False
 
     # Workspace bounding box
     _lo, _hi = ws_lo, ws_hi
@@ -1078,6 +1115,8 @@ def main():
         cb_sim_eff        = server.gui.add_checkbox("Sim eff action arrow",  initial_value=True)
         cb_real_raw       = server.gui.add_checkbox("Real raw action arrow", initial_value=True)
         cb_real_eff       = server.gui.add_checkbox("Real eff action arrow", initial_value=True)
+        cb_sim_rot        = server.gui.add_checkbox("Sim rot action arrow",  initial_value=True)
+        cb_real_rot       = server.gui.add_checkbox("Real rot action arrow", initial_value=True)
 
     _all_vis = [
         (cb_bbox,           ws_bbox),
@@ -1089,6 +1128,8 @@ def main():
         (cb_sim_eff,        eff_arrow_sim),
         (cb_real_raw,       raw_arrow_real),
         (cb_real_eff,       eff_arrow_real),
+        (cb_sim_rot,        rot_arrow_sim),
+        (cb_real_rot,       rot_arrow_real),
     ]
 
     def _on_show_all(_):
@@ -1112,6 +1153,8 @@ def main():
     cb_sim_eff.on_update(  lambda _: setattr(eff_arrow_sim,   "visible", cb_sim_eff.value))
     cb_real_raw.on_update( lambda _: setattr(raw_arrow_real,  "visible", cb_real_raw.value))
     cb_real_eff.on_update( lambda _: setattr(eff_arrow_real,  "visible", cb_real_eff.value))
+    cb_sim_rot.on_update(  lambda _: setattr(rot_arrow_sim,   "visible", cb_sim_rot.value))
+    cb_real_rot.on_update( lambda _: setattr(rot_arrow_real,  "visible", cb_real_rot.value))
 
     with server.gui.add_folder("Policy"):
         txt_policy_hz  = server.gui.add_text(
@@ -1129,6 +1172,7 @@ def main():
         txt_goal       = server.gui.add_text("Goal pos",             initial_value="—")
         txt_ee_cube    = server.gui.add_text("Sim EE→cube dist",     initial_value="—")
         txt_cube_goal  = server.gui.add_text("Sim cube→goal dist",   initial_value="—")
+        txt_task_done  = server.gui.add_text("Task status",          initial_value="RUNNING")
         txt_gripper_s  = server.gui.add_text("Gripper ctrl sim",     initial_value="—")
         txt_gripper_r  = server.gui.add_text("Gripper ctrl real",    initial_value="—")
         reset_btn      = server.gui.add_button("Reset")
@@ -1200,6 +1244,7 @@ def main():
             real_reset_done.wait()
             print("[reset] Real robot homed.")
 
+        _np_bool(shm_task_done)[0] = False
         reset_in_progress.clear()
         print("[reset] All done, policy resuming.")
 
@@ -1288,20 +1333,28 @@ def main():
             # ── Action arrows ──────────────────────────────────────────────────
             raw_delta_sim  = _np(shm_action_sim)[:3].copy()
             eff_delta_sim  = _np(shm_action_sim)[3:6].copy()
+            rot_rotvec_sim = _np(shm_action_sim)[7:10].copy()
             raw_delta_real = _np(shm_action_real)[:3].copy()
             eff_delta_real = _np(shm_action_real)[3:6].copy()
+            rot_rotvec_real = _np(shm_action_real)[7:10].copy()
             if cb_sim_raw.value:
                 raw_arrow_sim.vertices  = _make_arrow_mesh(
-                    ee_pos_sim, ee_pos_sim + raw_delta_sim)[0]
+                    ee_pos_sim, ee_pos_sim + raw_delta_sim * VIS_ACTION_SCALE)[0]
             if cb_sim_eff.value:
                 eff_arrow_sim.vertices  = _make_arrow_mesh(
-                    ee_pos_sim, ee_pos_sim + eff_delta_sim)[0]
+                    ee_pos_sim, ee_pos_sim + eff_delta_sim * VIS_ACTION_SCALE)[0]
             if cb_real_raw.value:
                 raw_arrow_real.vertices = _make_arrow_mesh(
-                    ee_pos_real, ee_pos_real + raw_delta_real)[0]
+                    ee_pos_real, ee_pos_real + raw_delta_real * VIS_ACTION_SCALE)[0]
             if cb_real_eff.value:
                 eff_arrow_real.vertices = _make_arrow_mesh(
-                    ee_pos_real, ee_pos_real + eff_delta_real)[0]
+                    ee_pos_real, ee_pos_real + eff_delta_real * VIS_ACTION_SCALE)[0]
+            if cb_sim_rot.value:
+                rot_arrow_sim.vertices  = _make_arrow_mesh(
+                    ee_pos_sim, ee_pos_sim + rot_rotvec_sim * VIS_ACTION_SCALE)[0]
+            if cb_real_rot.value:
+                rot_arrow_real.vertices = _make_arrow_mesh(
+                    ee_pos_real, ee_pos_real + rot_rotvec_real * VIS_ACTION_SCALE)[0]
 
             # ── GUI text ───────────────────────────────────────────────────────
             cube_pos_sim_cur  = _np(shm_cube_pos_sim).copy()
@@ -1330,7 +1383,10 @@ def main():
                               f"y={goal_pos_cur[1]:+.3f}  "
                               f"z={goal_pos_cur[2]:+.3f}")
             txt_ee_cube.value  = (f"{np.linalg.norm(cube_pos_sim_cur - ee_pos_sim)*100:.1f} cm")
-            txt_cube_goal.value = (f"{np.linalg.norm(goal_pos_cur - cube_pos_sim_cur)*100:.1f} cm")
+            cube_goal_dist = np.linalg.norm(goal_pos_cur - cube_pos_sim_cur)
+            txt_cube_goal.value = (f"{cube_goal_dist*100:.1f} cm")
+            task_done_flag = bool(_np_bool(shm_task_done)[0])
+            txt_task_done.value = f"DONE (<{SUCCESS_THRESH*100:.0f}cm)" if task_done_flag else f"RUNNING  ({cube_goal_dist*100:.1f} cm)"
             txt_gripper_s.value = f"{gripper_ctrl_sim:.0f} / {GRIPPER_CTRL_MAX:.0f}"
             txt_gripper_r.value = f"{gripper_ctrl_real:.0f} / {GRIPPER_CTRL_MAX:.0f}"
 
