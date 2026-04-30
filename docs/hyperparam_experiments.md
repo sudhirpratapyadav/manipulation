@@ -46,7 +46,7 @@ variation) so robustness/regression on each lever is causally attributable.
 | ID | Knob varied | Value | vs reference | W&B run | Status | Best SR @ iter | Notes |
 |---|---|---|---|---|---|---|---|
 | ref | (none) | — | — | [cmxw5ysd](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/cmxw5ysd) | **done** | **0.657** (mean SR iter 4800-4999, model_4999.pt) | 10h35m wall, 7.6 s/iter, no NaN |
-| A | `num_envs` | 8192 | 8× more parallel envs | [xzq0b2ft](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/xzq0b2ft) | running | iter 1005: 0.76 (curriculum 20% ramped) | 17.5s/iter, ETA ~24h |
+| A | `num_envs` | 8192 | 8× more parallel envs | [xzq0b2ft](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/xzq0b2ft) | **cancelled at iter ~1830** | last logged: SR=0.75 (curriculum 53% ramped) | Cancelled to free GPU for baseline_dr_v2; SR was on track to plateau higher than ref's 0.657 |
 | B | `num_steps_per_env` | 48 | 2× longer rollouts | [v69rmqca](https://wandb.ai/sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/runs/v69rmqca) | running | iter 1063: 0.69; curriculum at 24.7° (2× faster than ref due to bug — see notes) | 15s/iter, ETA ~17h |
 
 ## Per-experiment notes
