@@ -1266,6 +1266,77 @@ def _baseline_dr_knobs() -> PhaseKnobs:
     return k
 
 
+# ---------------------------------------------------------------------------
+# baseline_dr_v2: baseline_dr + longer drawer (joint range -0.40m, goal range
+# [-0.35,-0.10]) + stepped impulse curriculum on drawer base.
+#
+# Drawer joint XML range was widened from -0.25 to -0.40 m. The goal range
+# [-0.35, -0.10] is sampled uniformly per episode so the policy sees both
+# short (10 cm) and long (35 cm) pulls. No curriculum on drawer length —
+# treat as a property of the cabinet, not a learning gradient.
+#
+# Impulse curriculum (PPO iter, common_step_counter // num_steps_per_env):
+#   iter   0..299  : magnitude 0   (no impulse)
+#   iter 300..399  : magnitude 3 N
+#   iter 400..499  : magnitude 6 N
+#   iter 500..599  : magnitude 9 N
+#   iter 600..699  : magnitude 12 N
+#   iter 700+      : magnitude 15 N (peak, frozen)
+#
+# Each impulse fires for 0.05-0.15 s (1-6 control steps), cooldown
+# 0.3-1.0 s, direction sampled uniformly per impulse on the drawer base body.
+# ---------------------------------------------------------------------------
+
+
+_BASELINE_DR_V2_GOAL_LO = -0.35
+_BASELINE_DR_V2_GOAL_HI = -0.10
+_IMPULSE_STEPS_N: list[tuple[int, float]] = [
+    (0, 0.0),
+    (300, 3.0),
+    (400, 6.0),
+    (500, 9.0),
+    (600, 12.0),
+    (700, 15.0),
+]
+
+
+def baseline_dr_v2_impulse_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Stepped impulse-magnitude curriculum on the drawer base body.
+
+    At each PPO iter, picks the largest threshold value in
+    ``_IMPULSE_STEPS_N`` that the iter has reached, and updates the
+    ``baseline_dr_v2_drawer_impulse`` event term's ``force_range`` to
+    ``(-amp, amp)`` so each component is uniformly sampled in that range
+    (vector direction is random per impulse trigger).
+    """
+    del env_ids
+    train_iter = env.common_step_counter // num_steps_per_env
+    amp = 0.0
+    for thresh, val in _IMPULSE_STEPS_N:
+        if train_iter >= thresh:
+            amp = val
+    term = env.event_manager.get_term_cfg("baseline_dr_v2_drawer_impulse")
+    if amp <= 0.0:
+        # Disabled — set zero force range so apply_body_impulse writes zeros.
+        term.params["force_range"] = (0.0, 0.0)
+    else:
+        term.params["force_range"] = (-amp, amp)
+    return {"impulse_amp_N": torch.tensor(amp)}
+
+
+def _baseline_dr_v2_knobs() -> PhaseKnobs:
+    """baseline_dr_v2: baseline_dr + (drawer length + impulse curriculum).
+
+    Drawer length and impulse setup are wired in the env_cfg factory below
+    since they need event-term + command-cfg edits (outside PhaseKnobs).
+    """
+    return _baseline_dr_knobs()
+
+
 def _install_baseline_dr_curriculum(cfg: ManagerBasedRlEnvCfg) -> None:
     """Install the 3 curriculum terms that widen init ranges over training."""
     cfg.curriculum["baseline_dr_drawer_extent"] = CurriculumTermCfg(
@@ -1313,6 +1384,57 @@ def kinova_open_drawer_osc_baseline_dr_env_cfg(play: bool = False) -> ManagerBas
     cfg = kinova_open_drawer_osc_env_cfg(play=play, phase_knobs=_baseline_dr_knobs())
     if not play:
         _install_baseline_dr_curriculum(cfg)
+    return cfg
+
+
+def _install_baseline_dr_v2_extras(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Install baseline_dr_v2 extras: longer drawer goal range + impulse + curriculum.
+
+    Drawer XML hard limit was widened from -0.25 to -0.40 m
+    (drawer.xml drawer_slide range). This factory widens the goal
+    sampling range and adds the stepped-impulse curriculum.
+    """
+    import mjlab.envs.mdp.events as events
+
+    # Widen the drawer goal range (no curriculum — full range from iter 0).
+    cmd_cfg = cfg.commands["drawer_goal"]
+    cmd_cfg.slide_lo = _BASELINE_DR_V2_GOAL_LO
+    cmd_cfg.slide_hi = _BASELINE_DR_V2_GOAL_HI
+
+    # Stepped impulse on the drawer base. The event term ticks every step;
+    # the curriculum function below mutates its force_range based on iter.
+    cfg.events["baseline_dr_v2_drawer_impulse"] = EventTermCfg(
+        mode="step",
+        func=events.apply_body_impulse,
+        params={
+            "asset_cfg": SceneEntityCfg("drawer", body_names=("drawer_base",)),
+            "force_range": (0.0, 0.0),  # mutated by curriculum
+            "torque_range": (0.0, 0.0),
+            "duration_s": (0.05, 0.15),
+            "cooldown_s": (0.3, 1.0),
+        },
+    )
+    cfg.curriculum["baseline_dr_v2_impulse"] = CurriculumTermCfg(
+        func=baseline_dr_v2_impulse_curriculum,
+        params={},
+    )
+
+
+def kinova_open_drawer_osc_baseline_dr_v2_env_cfg(
+    play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """baseline_dr_v2: baseline_dr + longer drawer (10-35cm pull)
+    + stepped impulse curriculum on drawer base.
+    """
+    cfg = kinova_open_drawer_osc_env_cfg(
+        play=play, phase_knobs=_baseline_dr_v2_knobs()
+    )
+    if not play:
+        _install_baseline_dr_curriculum(cfg)
+        _install_baseline_dr_v2_extras(cfg)
+    else:
+        # Even in play mode, widen the goal range so demo videos match.
+        _install_baseline_dr_v2_extras(cfg)
     return cfg
 
 

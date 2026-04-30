@@ -41,6 +41,7 @@ from kinova_tasks.tasks.open_drawer_osc import (
     kinova_open_drawer_osc_phase2_env_cfg,
     kinova_open_drawer_osc_phase4_env_cfg,
     kinova_open_drawer_osc_baseline_dr_env_cfg,
+    kinova_open_drawer_osc_baseline_dr_v2_env_cfg,
     kinova_open_drawer_osc_ppo_cfg,
 )
 
@@ -156,5 +157,14 @@ register_mjlab_task(
     task_id="Mjlab-Open-Drawer-Osc-Kinova-BaselineDr",
     env_cfg=kinova_open_drawer_osc_baseline_dr_env_cfg(),
     play_env_cfg=kinova_open_drawer_osc_baseline_dr_env_cfg(play=True),
+    rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
+)
+
+# baseline_dr_v2 — baseline_dr + longer drawer (joint range -0.40 m, goal in
+# [-0.35, -0.10]) + stepped impulse curriculum on drawer base body.
+register_mjlab_task(
+    task_id="Mjlab-Open-Drawer-Osc-Kinova-BaselineDrV2",
+    env_cfg=kinova_open_drawer_osc_baseline_dr_v2_env_cfg(),
+    play_env_cfg=kinova_open_drawer_osc_baseline_dr_v2_env_cfg(play=True),
     rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
 )
