@@ -48,6 +48,15 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Curriculum schedule: linear ramp from start to end values between
+# _RAMP_START_ITER and _RAMP_END_ITER (PPO iters).
+# Mirrors the open_drawer baseline_dr schedule.
+# ---------------------------------------------------------------------------
+_RAMP_START_ITER = 500
+_RAMP_END_ITER = 3000
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -639,7 +648,7 @@ def cube_out_of_bounds(
     env: ManagerBasedRlEnv,
     cube_entity_name: str = "cube",
     home_pos: tuple[float, float, float] = _HOME_POS,
-    workspace_half: tuple[float, float, float] = (0.20, 0.20, 0.30),
+    workspace_half: tuple[float, float, float] = (0.35, 0.25, 0.40),
 ) -> torch.Tensor:
     """Terminate if the cube leaves the workspace box centered on the home EE pose."""
     cube: Entity = env.scene[cube_entity_name]
@@ -650,6 +659,127 @@ def cube_out_of_bounds(
         (pos_local >= home - ws_half) & (pos_local <= home + ws_half)
     ).all(dim=-1)
     return ~in_workspace
+
+
+# ---------------------------------------------------------------------------
+# Curriculum functions
+# ---------------------------------------------------------------------------
+
+
+def _ramp_by_iter(
+    env: ManagerBasedRlEnv,
+    start_val: float,
+    end_val: float,
+    num_steps_per_env: int = 24,
+) -> float:
+    """Linear ramp on PPO iter (= common_step_counter // num_steps_per_env).
+
+    Held at ``start_val`` below ``_RAMP_START_ITER`` and at ``end_val`` above
+    ``_RAMP_END_ITER``.
+    """
+    train_iter = env.common_step_counter // num_steps_per_env
+    if train_iter <= _RAMP_START_ITER:
+        return start_val
+    if train_iter >= _RAMP_END_ITER:
+        return end_val
+    t = (train_iter - _RAMP_START_ITER) / (_RAMP_END_ITER - _RAMP_START_ITER)
+    return start_val + t * (end_val - start_val)
+
+
+def cube_spawn_extent_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_x: float = 0.10, end_x: float = 0.30,
+    start_y: float = 0.10, end_y: float = 0.20,
+    center_x: float = 0.0, center_y: float = -0.5,
+    z_lo: float = 0.02, z_hi: float = 0.03,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Widen cube spawn x/y extents over training (z fixed: cube on ground)."""
+    del env_ids
+    hx = _ramp_by_iter(env, start_x, end_x, num_steps_per_env)
+    hy = _ramp_by_iter(env, start_y, end_y, num_steps_per_env)
+    term = env.event_manager.get_term_cfg("reset_cube_position")
+    term.params["x_range"] = (center_x - hx, center_x + hx)
+    term.params["y_range"] = (center_y - hy, center_y + hy)
+    term.params["z_range"] = (z_lo, z_hi)
+    return {
+        "cube_spawn_x_extent": torch.tensor(hx),
+        "cube_spawn_y_extent": torch.tensor(hy),
+    }
+
+
+def goal_extent_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_x: float = 0.10, end_x: float = 0.30,
+    start_y: float = 0.10, end_y: float = 0.20,
+    start_z_lo: float = 0.10, end_z_lo: float = 0.025,
+    start_z_hi: float = 0.30, end_z_hi: float = 0.40,
+    center_x: float = 0.0, center_y: float = -0.5,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Widen goal x/y extents and z range over training.
+
+    Goal z minimum ramps down to cube resting height (0.025) so the policy
+    sees both "lift high" and "place at ground" goals at full curriculum.
+    """
+    del env_ids
+    hx = _ramp_by_iter(env, start_x, end_x, num_steps_per_env)
+    hy = _ramp_by_iter(env, start_y, end_y, num_steps_per_env)
+    z_lo = _ramp_by_iter(env, start_z_lo, end_z_lo, num_steps_per_env)
+    z_hi = _ramp_by_iter(env, start_z_hi, end_z_hi, num_steps_per_env)
+    term = env.command_manager.get_term("pick_goal")
+    term.cfg.x_range = (center_x - hx, center_x + hx)
+    term.cfg.y_range = (center_y - hy, center_y + hy)
+    term.cfg.z_range = (z_lo, z_hi)
+    return {
+        "goal_x_extent": torch.tensor(hx),
+        "goal_y_extent": torch.tensor(hy),
+        "goal_z_lo": torch.tensor(z_lo),
+        "goal_z_hi": torch.tensor(z_hi),
+    }
+
+
+def joint_delta_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_deg: float = 5.0,
+    end_deg: float = 20.0,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Widen per-joint reset half-extent (degrees) over training."""
+    del env_ids
+    d = _ramp_by_iter(env, start_deg, end_deg, num_steps_per_env)
+    term = env.event_manager.get_term_cfg("reset_robot_joints")
+    term.params["joint_delta_deg"] = float(d)
+    return {"joint_delta_deg": torch.tensor(d)}
+
+
+def base_pose_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_xy_m: float = 0.0,
+    end_xy_m: float = 0.05,
+    start_yaw_deg: float = 0.0,
+    end_yaw_deg: float = 10.0,
+    num_steps_per_env: int = 24,
+) -> dict[str, torch.Tensor]:
+    """Widen robot base XY (m) and yaw (deg) reset half-extents over training."""
+    del env_ids
+    xy = _ramp_by_iter(env, start_xy_m, end_xy_m, num_steps_per_env)
+    yaw_deg = _ramp_by_iter(env, start_yaw_deg, end_yaw_deg, num_steps_per_env)
+    yaw_rad = yaw_deg * _DEG_TO_RAD
+    term = env.event_manager.get_term_cfg("reset_base")
+    term.params["pose_range"] = {
+        "x":   (-xy, xy),
+        "y":   (-xy, xy),
+        "yaw": (-yaw_rad, yaw_rad),
+    }
+    return {
+        "base_xy_extent_m": torch.tensor(xy),
+        "base_yaw_extent_deg": torch.tensor(yaw_deg),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +870,9 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     # --- Events ---
+    # Reset events use the *start-of-curriculum* values; the curriculum
+    # functions overwrite these terms' params each step to widen the ranges
+    # between iter 500 and 3000.
     events = {
         "reset_base": EventTermCfg(
             func=mdp.reset_root_state_uniform,
@@ -749,7 +882,7 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "reset_robot_joints": EventTermCfg(
             func=reset_joints_with_delta,
             mode="reset",
-            params={"entity_name": "robot", "joint_delta_deg": 2.0},
+            params={"entity_name": "robot", "joint_delta_deg": 5.0},
         ),
         "reset_gripper_open": EventTermCfg(
             func=reset_gripper_open,
@@ -764,8 +897,8 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "cube_entity_name": "cube",
-                "x_range": (_CUBE_SPAWN_LO[0], _CUBE_SPAWN_HI[0]),
-                "y_range": (_CUBE_SPAWN_LO[1], _CUBE_SPAWN_HI[1]),
+                "x_range": (-0.10, 0.10),
+                "y_range": (-0.60, -0.40),
                 "z_range": (_CUBE_SPAWN_LO[2], _CUBE_SPAWN_HI[2]),
             },
         ),
@@ -801,6 +934,28 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "distribution": "log_uniform",
                 "axes": [2],
                 "ranges": (1e-5, 5e-3),
+            },
+        ),
+        # Cube contact-surface friction (matte plastic vs glossy painted vs metal)
+        "cube_friction_slide": EventTermCfg(
+            mode="startup",
+            func=mdp.dr.geom_friction,
+            params={
+                "asset_cfg": SceneEntityCfg("cube", geom_names=("cube_geom",)),
+                "operation": "abs",
+                "distribution": "uniform",
+                "axes": [0],
+                "ranges": (0.3, 1.5),
+            },
+        ),
+        # Cube mass (~50 g nominal): scale ∈ [0.5, 2.0] log-uniform via pseudo_inertia
+        "cube_mass": EventTermCfg(
+            mode="startup",
+            func=mdp.dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("cube", body_names=("cube",)),
+                "alpha_range": (-0.5 * _math.log(2.0), 0.5 * _math.log(2.0)),
+                "distribution": "uniform",
             },
         ),
     }
@@ -843,13 +998,14 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=("joint_[1-7]",)),
             },
         ),
-        # Exponential EE-ground force penalty; ramped up by curriculum below.
-        # scale (N): forces << scale score ~0; forces >> scale shoot up fast.
-        "ee_ground_force": RewardTermCfg(
-            func=ee_ground_force_penalty,
-            weight=0.0,
-            params={"sensor_name": "ee_ground_collision", "scale": 10.0},
-        ),
+        # EE-ground force penalty disabled while we focus on widening the
+        # operating envelope. Re-enable (and its curriculum below) if EE
+        # slamming into the table becomes a problem on the trained policy.
+        # "ee_ground_force": RewardTermCfg(
+        #     func=ee_ground_force_penalty,
+        #     weight=0.0,
+        #     params={"sensor_name": "ee_ground_collision", "scale": 10.0},
+        # ),
     }
 
     # --- Terminations ---
@@ -925,20 +1081,50 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 ],
             },
         ),
-        # EE-ground force penalty: 0 for first 100 iters, then ramp every 50 iters
-        # 1 iter = 24 steps (num_steps_per_env), so 100 iters = 2400, 50 iters = 1200
-        "ee_ground_force_weight": CurriculumTermCfg(
-            func=mdp.reward_curriculum,
+        # EE-ground force curriculum disabled with the reward term itself.
+        # "ee_ground_force_weight": CurriculumTermCfg(
+        #     func=mdp.reward_curriculum,
+        #     params={
+        #         "reward_name": "ee_ground_force",
+        #         "stages": [
+        #             {"step":    0, "weight":  0.000},
+        #             {"step": 2400, "weight": -0.010},
+        #             {"step": 3600, "weight": -0.025},
+        #             {"step": 4800, "weight": -0.050},
+        #             {"step": 6000, "weight": -0.075},
+        #             {"step": 7200, "weight": -0.100},
+        #         ],
+        #     },
+        # ),
+        # Init-distribution curricula: linearly widen between iter 500 and 3000.
+        "cube_spawn_extent": CurriculumTermCfg(
+            func=cube_spawn_extent_curriculum,
             params={
-                "reward_name": "ee_ground_force",
-                "stages": [
-                    {"step":    0, "weight":  0.000},  # no penalty (warmup)
-                    {"step": 2400, "weight": -0.010},  # 100 iters
-                    {"step": 3600, "weight": -0.025},  # 150 iters
-                    {"step": 4800, "weight": -0.050},  # 200 iters
-                    {"step": 6000, "weight": -0.075},  # 250 iters
-                    {"step": 7200, "weight": -0.100},  # 300 iters (max)
-                ],
+                "start_x": 0.10, "end_x": 0.30,
+                "start_y": 0.10, "end_y": 0.20,
+                "center_x": 0.0, "center_y": -0.5,
+                "z_lo": _CUBE_SPAWN_LO[2], "z_hi": _CUBE_SPAWN_HI[2],
+            },
+        ),
+        "goal_extent": CurriculumTermCfg(
+            func=goal_extent_curriculum,
+            params={
+                "start_x": 0.10, "end_x": 0.30,
+                "start_y": 0.10, "end_y": 0.20,
+                "start_z_lo": 0.10, "end_z_lo": 0.025,
+                "start_z_hi": 0.30, "end_z_hi": 0.40,
+                "center_x": 0.0, "center_y": -0.5,
+            },
+        ),
+        "joint_delta": CurriculumTermCfg(
+            func=joint_delta_curriculum,
+            params={"start_deg": 5.0, "end_deg": 20.0},
+        ),
+        "base_pose": CurriculumTermCfg(
+            func=base_pose_curriculum,
+            params={
+                "start_xy_m": 0.0, "end_xy_m": 0.05,
+                "start_yaw_deg": 0.0, "end_yaw_deg": 10.0,
             },
         ),
     }
