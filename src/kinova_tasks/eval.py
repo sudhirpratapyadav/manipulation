@@ -57,6 +57,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
+import h5py
+import mujoco
 import numpy as np
 import pandas as pd
 import torch
@@ -374,9 +376,80 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
     # env in lockstep — mjlab is vectorized — but skip its rows).
     env_active = np.ones(num_envs, dtype=bool)
 
+    # Physics-state buffers for replay (mjSTATE_PHYSICS = qpos+qvel+act).
+    # Per-env buffer accumulates frames during a trial; on trial end it gets
+    # flushed into `trial_states[trial_id]`. We save model.mjb once at the
+    # end so the viz tool can rebuild the scene.
+    #
+    # Free-joint xyz coords in qpos are *world*-frame, so they include the
+    # env_origin offset that mjlab applies when laying out parallel envs in
+    # a grid. The viz tool replays into a single-env scene rooted at world
+    # origin, so we strip the env_origin offset at capture time. Indices of
+    # the first 3 qpos slots of each freejoint are precomputed below.
+    mj_model = env.sim.mj_model
+    nq = mj_model.nq
+    nv = mj_model.nv
+    na = mj_model.na
+    state_size = nq + nv + na  # mjSTATE_PHYSICS layout: qpos, qvel, act
+    free_joint_qpos_xyz_starts: list[int] = [
+        int(mj_model.jnt_qposadr[j])
+        for j in range(mj_model.njnt)
+        if int(mj_model.jnt_type[j]) == int(mujoco.mjtJoint.mjJNT_FREE)
+    ]
+    nmocap = int(mj_model.nmocap)
+    env_origins_np = env.scene.env_origins.detach().cpu().numpy().astype(np.float32)
+    per_env_state_buf: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
+    per_env_mocap_buf: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
+    trial_states: dict[int, np.ndarray] = {}
+    # mocap stored as (T, nmocap, 7) — pos(3) + quat(4). Empty if nmocap==0.
+    trial_mocap: dict[int, np.ndarray] = {}
+
+    def _capture_states_into_buf() -> None:
+        """Append current per-env physics state to each active env's buffer.
+
+        Free-joint xyz slots and mocap_pos slots get env_origin subtracted
+        so frames are in the env-local frame (consistent with a single-env
+        replay scene rooted at world origin).
+        """
+        wp_data = env.sim.wp_data
+        qpos = wp_data.qpos.numpy().copy()  # (E, nq); copy because we mutate
+        qvel = wp_data.qvel.numpy()  # (E, nv) — velocities are frame-agnostic
+        if na > 0:
+            act = wp_data.act.numpy()
+        # Subtract env_origin from each freejoint xyz (qvel/quat unaffected).
+        for qadr in free_joint_qpos_xyz_starts:
+            qpos[:, qadr : qadr + 3] -= env_origins_np
+        if nmocap > 0:
+            # (E, nmocap, 3) and (E, nmocap, 4)
+            mp = wp_data.mocap_pos.numpy().copy()
+            mq = wp_data.mocap_quat.numpy().copy()
+            mp -= env_origins_np[:, None, :]  # broadcast over nmocap
+        for ei in range(num_envs):
+            if not env_active[ei]:
+                continue
+            if na > 0:
+                frame = np.concatenate(
+                    [qpos[ei], qvel[ei], act[ei]], axis=0
+                ).astype(np.float32)
+            else:
+                frame = np.concatenate([qpos[ei], qvel[ei]], axis=0).astype(
+                    np.float32
+                )
+            per_env_state_buf[ei].append(frame)
+            if nmocap > 0:
+                # Pack as (nmocap, 7) per step.
+                mocap_frame = np.concatenate([mp[ei], mq[ei]], axis=-1).astype(
+                    np.float32
+                )
+                per_env_mocap_buf[ei].append(mocap_frame)
+
     completed_trials = 0
     while completed_trials < num_trials_total:
-        with torch.inference_mode():
+        # Use torch.no_grad, NOT torch.inference_mode: the latter puts tensors
+        # into a state that breaks subsequent in-place updates inside the env
+        # manager (specifically reset events that re-write joint state on
+        # auto-reset). mjlab's play viewer uses no_grad for the same reason.
+        with torch.no_grad():
             action = policy(obs)  # obs is the TensorDict; policy handles it
         # mjlab dummy agents return torch tensors of the right shape; trained
         # policy returns (E, A). Make sure clip_actions matches what agent_cfg
@@ -405,6 +478,9 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
         # step_rows BEFORE checking dones (between policy's view and
         # next iteration).
         step_data = _read_step_data(env, action)
+
+        # Capture physics state for replay (one frame per outer step).
+        _capture_states_into_buf()
 
         # Per-step success indicator using metric_object_to_goal_error.
         if "metric_object_to_goal_error" in step_data:
@@ -512,6 +588,15 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
 
             trial_rows.append(trial_row)
 
+            # Flush this env's physics-state buffer into trial_states.
+            tid = int(global_trial_id[ei])
+            if per_env_state_buf[ei]:
+                trial_states[tid] = np.stack(per_env_state_buf[ei], axis=0)
+                if nmocap > 0:
+                    trial_mocap[tid] = np.stack(per_env_mocap_buf[ei], axis=0)
+            per_env_state_buf[ei] = []
+            per_env_mocap_buf[ei] = []
+
             # Reset for next trial in this env.
             trial_idx_per_env[ei] += 1
             step_in_trial[ei] = 0
@@ -571,12 +656,47 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
         "obs_dim": int(obs_dim) if obs_dim is not None else None,
         "action_dim": int(action_dim),
         "dr_axes": list(dr_draws.keys()),
+        # Replay metadata
+        "nq": int(nq),
+        "nv": int(nv),
+        "na": int(na),
+        "nmocap": int(nmocap),
+        "state_size": int(state_size),
+        "state_layout": "qpos[nq], qvel[nv], act[na]",
+        "mocap_layout": "(nmocap, 7) per step: pos(3) + quat(4)",
+        "model_file": "model.mjb",
+        "states_file": "states.h5",
     }
     (out_dir / "run.json").write_text(json.dumps(run_meta, indent=2))
 
     print(f"[INFO] writing {len(trial_rows)} trials, {len(step_rows)} steps to {out_dir}")
     pd.DataFrame(trial_rows).to_parquet(out_dir / "runs.parquet", index=False)
     pd.DataFrame(step_rows).to_parquet(out_dir / "steps.parquet", index=False)
+
+    # Save MuJoCo binary model (template — per-env DR not baked in; replay
+    # uses qpos/qvel directly via mj_setState so contact dynamics from DR
+    # don't matter for visualization).
+    mujoco.mj_saveModel(mj_model, str(out_dir / "model.mjb"), None)
+
+    # Save physics-state trajectories: one HDF5 group per trial holding
+    # /trial_<id>/states (T, state_size) and /trial_<id>/mocap (T, nmocap, 7).
+    # Both already in env-local frame.
+    with h5py.File(out_dir / "states.h5", "w") as h:
+        h.attrs["nq"] = nq
+        h.attrs["nv"] = nv
+        h.attrs["na"] = na
+        h.attrs["nmocap"] = nmocap
+        h.attrs["state_size"] = state_size
+        for tid, states in trial_states.items():
+            grp = h.create_group(f"trial_{tid}")
+            grp.create_dataset(
+                "states", data=states, compression="gzip", compression_opts=4,
+            )
+            if nmocap > 0 and tid in trial_mocap:
+                grp.create_dataset(
+                    "mocap", data=trial_mocap[tid],
+                    compression="gzip", compression_opts=4,
+                )
 
     # Quick summary.
     df = pd.DataFrame(trial_rows)
@@ -591,6 +711,8 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
     print(f"  written: {out_dir}/run.json")
     print(f"           {out_dir}/runs.parquet")
     print(f"           {out_dir}/steps.parquet")
+    print(f"           {out_dir}/model.mjb")
+    print(f"           {out_dir}/states.h5  ({len(trial_states)} trials)")
 
     wrapped.close()
 
