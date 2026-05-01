@@ -76,10 +76,10 @@ _DEG_TO_RAD = _math.pi / 180.0
 _HOME_POS = (-0.024850, -0.482624, 0.174564)
 
 # Spawn / goal bounding boxes (local frame, used in events + debug vis)
-_CUBE_SPAWN_LO = (-0.1, -0.6,  0.02)
-_CUBE_SPAWN_HI = ( 0.1, -0.4,  0.03)
-# _CUBE_SPAWN_LO = (-0.3, -0.7,  0.02)
-# _CUBE_SPAWN_HI = ( 0.3, -0.3,  0.03)
+_OBJECT_SPAWN_LO = (-0.1, -0.6,  0.02)
+_OBJECT_SPAWN_HI = ( 0.1, -0.4,  0.03)
+# _OBJECT_SPAWN_LO = (-0.3, -0.7,  0.02)
+# _OBJECT_SPAWN_HI = ( 0.3, -0.3,  0.03)
 
 _GOAL_LO = (-0.10, -0.60,  0.10)
 _GOAL_HI = ( 0.10, -0.40,  0.30)
@@ -107,12 +107,12 @@ GRIPPER_JOINT_NAMES = tuple(GRIPPER_OPEN_JOINT_POS.keys())
 # ---------------------------------------------------------------------------
 
 
-class PickGoalCommand(CommandTerm):
+class ObjectGoalCommand(CommandTerm):
     """Samples and maintains a 3-D aerial goal position for the pick-and-lift task."""
 
-    cfg: PickGoalCommandCfg
+    cfg: ObjectGoalCommandCfg
 
-    def __init__(self, cfg: PickGoalCommandCfg, env: ManagerBasedRlEnv):
+    def __init__(self, cfg: ObjectGoalCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         self.goal_pos = torch.zeros(self.num_envs, 3, device=self.device)
 
@@ -155,7 +155,7 @@ class PickGoalCommand(CommandTerm):
                 [lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]],
             ], dtype=np.float32)
 
-        cube_corners_local = _box_corners(np.array(_CUBE_SPAWN_LO), np.array(_CUBE_SPAWN_HI))
+        cube_corners_local = _box_corners(np.array(_OBJECT_SPAWN_LO), np.array(_OBJECT_SPAWN_HI))
         goal_corners_local = _box_corners(np.array(_GOAL_LO), np.array(_GOAL_HI))
 
         for i in env_indices:
@@ -192,20 +192,20 @@ class PickGoalCommand(CommandTerm):
 
 
 @dataclass(kw_only=True)
-class PickGoalCommandCfg(CommandTermCfg):
+class ObjectGoalCommandCfg(CommandTermCfg):
     """Configuration for the pick goal command term."""
 
     x_range: tuple[float, float] = (_GOAL_LO[0], _GOAL_HI[0])
     y_range: tuple[float, float] = (_GOAL_LO[1], _GOAL_HI[1])
     z_range: tuple[float, float] = (_GOAL_LO[2], _GOAL_HI[2])
 
-    def build(self, env: ManagerBasedRlEnv) -> PickGoalCommand:
-        return PickGoalCommand(self, env)
+    def build(self, env: ManagerBasedRlEnv) -> ObjectGoalCommand:
+        return ObjectGoalCommand(self, env)
 
 
-def _get_pick_goal_command(env: ManagerBasedRlEnv, command_name: str = "pick_goal") -> PickGoalCommand:
+def _get_object_goal_command(env: ManagerBasedRlEnv, command_name: str = "object_goal") -> ObjectGoalCommand:
     term = env.command_manager.get_term(command_name)
-    assert isinstance(term, PickGoalCommand)
+    assert isinstance(term, ObjectGoalCommand)
     return term
 
 
@@ -331,10 +331,10 @@ def reset_gripper_open(
     robot.data.write_ctrl(ctrl, ctrl_ids=ctrl_asset_cfg.actuator_ids, env_ids=env_ids)
 
 
-def reset_cube_position(
+def reset_object_position(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
     x_range: tuple[float, float] = (-0.08, 0.03),
     y_range: tuple[float, float] = (-0.55, -0.42),
     z_range: tuple[float, float] = (0.19, 0.21),
@@ -343,7 +343,7 @@ def reset_cube_position(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     n = len(env_ids)
 
     lower = torch.tensor([x_range[0], y_range[0], z_range[0]], device=env.device)
@@ -401,41 +401,41 @@ def gripper_state(
     return pos / _GRIPPER_DRIVER_MAX
 
 
-def ee_to_cube(
+def ee_to_object(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
 ) -> torch.Tensor:
     """Vector from EE (pinch_site) to cube center in world frame (3D)."""
     robot: Entity = env.scene[asset_cfg.name]
     ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)  # (N, 3)
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     return cube.data.root_link_pos_w - ee_pos
 
 
-def cube_pos(
+def object_pos(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
 ) -> torch.Tensor:
     """Cube position in local (robot-base) frame (3D)."""
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     return cube.data.root_link_pos_w - env.scene.env_origins
 
 
-def cube_to_goal(
+def object_to_goal(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
-    command_name: str = "pick_goal",
+    object_entity_name: str = "cube",
+    command_name: str = "object_goal",
 ) -> torch.Tensor:
     """Vector from cube center to goal position in world frame (3D)."""
-    cube: Entity = env.scene[cube_entity_name]
-    goal_w = _get_pick_goal_command(env, command_name).goal_pos
+    cube: Entity = env.scene[object_entity_name]
+    goal_w = _get_object_goal_command(env, command_name).goal_pos
     return goal_w - cube.data.root_link_pos_w
 
 
-def goal_pos(env: ManagerBasedRlEnv, command_name: str = "pick_goal") -> torch.Tensor:
+def goal_pos(env: ManagerBasedRlEnv, command_name: str = "object_goal") -> torch.Tensor:
     """Goal position in local (robot-base) frame (3D)."""
-    goal_w = _get_pick_goal_command(env, command_name).goal_pos
+    goal_w = _get_object_goal_command(env, command_name).goal_pos
     return goal_w - env.scene.env_origins
 
 
@@ -444,33 +444,33 @@ def goal_pos(env: ManagerBasedRlEnv, command_name: str = "pick_goal") -> torch.T
 # ---------------------------------------------------------------------------
 
 
-def ee_to_cube_reward(
+def ee_to_object_reward(
     env: ManagerBasedRlEnv,
     std: float,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
 ) -> torch.Tensor:
     """Gaussian reward for EE proximity to cube (reach/approach phase)."""
     robot: Entity = env.scene[asset_cfg.name]
     ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     dist_sq = torch.sum(torch.square(cube.data.root_link_pos_w - ee_pos), dim=-1)
     return torch.nan_to_num(torch.exp(-dist_sq / std**2), nan=0.0)
 
 
-class cube_at_goal_reward:
+class object_at_goal_reward:
     """Gaussian reward for cube proximity to goal (lift phase).
 
     Debug vis draws:
       - Blue sphere at cube center
       - EE coordinate frame at pinch_site
-    (Goal sphere + bounding boxes are drawn by PickGoalCommand._debug_vis_impl)
+    (Goal sphere + bounding boxes are drawn by ObjectGoalCommand._debug_vis_impl)
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
         self._env = env
-        self._cube_entity_name: str = cfg.params.get("cube_entity_name", "cube")
-        self._command_name: str = cfg.params.get("command_name", "pick_goal")
+        self._object_entity_name: str = cfg.params.get("object_entity_name", "cube")
+        self._command_name: str = cfg.params.get("command_name", "object_goal")
         self._ee_site_name: str = "pinch_site"
         self._debug_vis_enabled: bool = True
         robot: Entity = env.scene["robot"]
@@ -480,11 +480,11 @@ class cube_at_goal_reward:
         self,
         env: ManagerBasedRlEnv,
         std: float,
-        cube_entity_name: str = "cube",
-        command_name: str = "pick_goal",
+        object_entity_name: str = "cube",
+        command_name: str = "object_goal",
     ) -> torch.Tensor:
-        cube: Entity = env.scene[cube_entity_name]
-        goal_w = _get_pick_goal_command(env, command_name).goal_pos
+        cube: Entity = env.scene[object_entity_name]
+        goal_w = _get_object_goal_command(env, command_name).goal_pos
         dist_sq = torch.sum(torch.square(cube.data.root_link_pos_w - goal_w), dim=-1)
         return torch.nan_to_num(torch.exp(-dist_sq / std**2), nan=0.0)
 
@@ -500,7 +500,7 @@ class cube_at_goal_reward:
         if not env_indices:
             return
 
-        cube: Entity = env.scene[self._cube_entity_name]
+        cube: Entity = env.scene[self._object_entity_name]
         robot: Entity = env.scene["robot"]
 
         for i in env_indices:
@@ -528,26 +528,26 @@ class cube_at_goal_reward:
 # ---------------------------------------------------------------------------
 
 
-def cube_to_goal_error(
+def object_to_goal_error(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
-    command_name: str = "pick_goal",
+    object_entity_name: str = "cube",
+    command_name: str = "object_goal",
 ) -> torch.Tensor:
     """Euclidean distance from cube center to goal position."""
-    cube: Entity = env.scene[cube_entity_name]
-    goal_w = _get_pick_goal_command(env, command_name).goal_pos
+    cube: Entity = env.scene[object_entity_name]
+    goal_w = _get_object_goal_command(env, command_name).goal_pos
     return torch.norm(cube.data.root_link_pos_w - goal_w, dim=-1)
 
 
-def ee_to_cube_error(
+def ee_to_object_error(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("pinch_site",)),
 ) -> torch.Tensor:
     """Euclidean distance from EE to cube center."""
     robot: Entity = env.scene[asset_cfg.name]
     ee_pos = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     return torch.norm(cube.data.root_link_pos_w - ee_pos, dim=-1)
 
 
@@ -644,14 +644,14 @@ class ee_ground_force_penalty:
 # ---------------------------------------------------------------------------
 
 
-def cube_out_of_bounds(
+def object_out_of_bounds(
     env: ManagerBasedRlEnv,
-    cube_entity_name: str = "cube",
+    object_entity_name: str = "cube",
     home_pos: tuple[float, float, float] = _HOME_POS,
     workspace_half: tuple[float, float, float] = (0.35, 0.25, 0.40),
 ) -> torch.Tensor:
     """Terminate if the cube leaves the workspace box centered on the home EE pose."""
-    cube: Entity = env.scene[cube_entity_name]
+    cube: Entity = env.scene[object_entity_name]
     pos_local = cube.data.root_link_pos_w - env.scene.env_origins  # (N, 3)
     home = torch.tensor(home_pos, device=env.device)
     ws_half = torch.tensor(workspace_half, device=env.device)
@@ -686,7 +686,7 @@ def _ramp_by_iter(
     return start_val + t * (end_val - start_val)
 
 
-def cube_spawn_extent_curriculum(
+def object_spawn_extent_curriculum(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     start_x: float = 0.10, end_x: float = 0.30,
@@ -699,13 +699,13 @@ def cube_spawn_extent_curriculum(
     del env_ids
     hx = _ramp_by_iter(env, start_x, end_x, num_steps_per_env)
     hy = _ramp_by_iter(env, start_y, end_y, num_steps_per_env)
-    term = env.event_manager.get_term_cfg("reset_cube_position")
+    term = env.event_manager.get_term_cfg("reset_object_position")
     term.params["x_range"] = (center_x - hx, center_x + hx)
     term.params["y_range"] = (center_y - hy, center_y + hy)
     term.params["z_range"] = (z_lo, z_hi)
     return {
-        "cube_spawn_x_extent": torch.tensor(hx),
-        "cube_spawn_y_extent": torch.tensor(hy),
+        "object_spawn_x_extent": torch.tensor(hx),
+        "object_spawn_y_extent": torch.tensor(hy),
     }
 
 
@@ -729,7 +729,7 @@ def goal_extent_curriculum(
     hy = _ramp_by_iter(env, start_y, end_y, num_steps_per_env)
     z_lo = _ramp_by_iter(env, start_z_lo, end_z_lo, num_steps_per_env)
     z_hi = _ramp_by_iter(env, start_z_hi, end_z_hi, num_steps_per_env)
-    term = env.command_manager.get_term("pick_goal")
+    term = env.command_manager.get_term("object_goal")
     term.cfg.x_range = (center_x - hx, center_x + hx)
     term.cfg.y_range = (center_y - hy, center_y + hy)
     term.cfg.z_range = (z_lo, z_hi)
@@ -808,22 +808,22 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=("right_driver_joint",))},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "ee_to_cube": ObservationTermCfg(
-            func=ee_to_cube,
+        "ee_to_object": ObservationTermCfg(
+            func=ee_to_object,
             params={
-                "cube_entity_name": "cube",
+                "object_entity_name": "cube",
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "cube_pos": ObservationTermCfg(
-            func=cube_pos,
-            params={"cube_entity_name": "cube"},
+        "object_pos": ObservationTermCfg(
+            func=object_pos,
+            params={"object_entity_name": "cube"},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "cube_to_goal": ObservationTermCfg(
-            func=cube_to_goal,
-            params={"cube_entity_name": "cube"},
+        "object_to_goal": ObservationTermCfg(
+            func=object_to_goal,
+            params={"object_entity_name": "cube"},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "goal_pos": ObservationTermCfg(
@@ -892,14 +892,14 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "ctrl_asset_cfg": SceneEntityCfg("robot", actuator_names=("fingers_actuator",)),
             },
         ),
-        "reset_cube_position": EventTermCfg(
-            func=reset_cube_position,
+        "reset_object_position": EventTermCfg(
+            func=reset_object_position,
             mode="reset",
             params={
-                "cube_entity_name": "cube",
+                "object_entity_name": "cube",
                 "x_range": (-0.10, 0.10),
                 "y_range": (-0.60, -0.40),
-                "z_range": (_CUBE_SPAWN_LO[2], _CUBE_SPAWN_HI[2]),
+                "z_range": (_OBJECT_SPAWN_LO[2], _OBJECT_SPAWN_HI[2]),
             },
         ),
         # Fingertip friction randomization (Robotiq 2F-85 pads)
@@ -937,7 +937,7 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         ),
         # Cube contact-surface friction (matte plastic vs glossy painted vs metal)
-        "cube_friction_slide": EventTermCfg(
+        "dr_object_friction_slide": EventTermCfg(
             mode="startup",
             func=mdp.dr.geom_friction,
             params={
@@ -949,7 +949,7 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         ),
         # Cube mass (~50 g nominal): scale ∈ [0.5, 2.0] log-uniform via pseudo_inertia
-        "cube_mass": EventTermCfg(
+        "dr_object_mass": EventTermCfg(
             mode="startup",
             func=mdp.dr.pseudo_inertia,
             params={
@@ -963,24 +963,24 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # --- Rewards ---
     rewards = {
         # Phase 1: EE reaches cube (Gaussian, std=0.15)
-        "reach_cube": RewardTermCfg(
-            func=ee_to_cube_reward,
+        "reach_object": RewardTermCfg(
+            func=ee_to_object_reward,
             weight=1.0,
             params={
                 "std": 0.15,
-                "cube_entity_name": "cube",
+                "object_entity_name": "cube",
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
         # Phase 2: Cube reaches aerial goal (Gaussian, std=0.1)
-        "lift_to_goal": RewardTermCfg(
-            func=cube_at_goal_reward,
+        "move_to_goal": RewardTermCfg(
+            func=object_at_goal_reward,
             weight=1.0,
             params={"std": 0.10},
         ),
         # Tight placement bonus (Gaussian, std=0.05)
         "goal_precise": RewardTermCfg(
-            func=cube_at_goal_reward,
+            func=object_at_goal_reward,
             weight=2.0,
             params={"std": 0.05},
         ),
@@ -1030,10 +1030,10 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         #     func=manipulation_mdp.illegal_contact,
         #     params={"sensor_name": "ee_ground_collision"},
         # ),
-        "cube_out_of_bounds": TerminationTermCfg(
-            func=cube_out_of_bounds,
+        "object_out_of_bounds": TerminationTermCfg(
+            func=object_out_of_bounds,
             params={
-                "cube_entity_name": "cube",
+                "object_entity_name": "cube",
                 "home_pos": _HOME_POS,
                 "workspace_half": (0.20, 0.20, 0.30),
             },
@@ -1042,14 +1042,14 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # --- Metrics ---
     metrics = {
-        "cube_to_goal_error": MetricsTermCfg(
-            func=cube_to_goal_error,
-            params={"cube_entity_name": "cube"},
+        "object_to_goal_error": MetricsTermCfg(
+            func=object_to_goal_error,
+            params={"object_entity_name": "cube"},
         ),
-        "ee_to_cube_error": MetricsTermCfg(
-            func=ee_to_cube_error,
+        "ee_to_object_error": MetricsTermCfg(
+            func=ee_to_object_error,
             params={
-                "cube_entity_name": "cube",
+                "object_entity_name": "cube",
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
@@ -1097,13 +1097,13 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         #     },
         # ),
         # Init-distribution curricula: linearly widen between iter 500 and 3000.
-        "cube_spawn_extent": CurriculumTermCfg(
-            func=cube_spawn_extent_curriculum,
+        "object_spawn_extent": CurriculumTermCfg(
+            func=object_spawn_extent_curriculum,
             params={
                 "start_x": 0.10, "end_x": 0.30,
                 "start_y": 0.10, "end_y": 0.20,
                 "center_x": 0.0, "center_y": -0.5,
-                "z_lo": _CUBE_SPAWN_LO[2], "z_hi": _CUBE_SPAWN_HI[2],
+                "z_lo": _OBJECT_SPAWN_LO[2], "z_hi": _OBJECT_SPAWN_HI[2],
             },
         ),
         "goal_extent": CurriculumTermCfg(
@@ -1143,7 +1143,7 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         observations=observations,
         actions=actions,
         commands={
-            "pick_goal": PickGoalCommandCfg(
+            "object_goal": ObjectGoalCommandCfg(
                 resampling_time_range=(1e9, 1e9),  # resample only on episode reset
                 debug_vis=True,
             ),
@@ -1179,7 +1179,24 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if play:
         cfg.episode_length_s = int(1e9)
         cfg.observations["actor"].enable_corruption = False
+        # Drop the curriculum and pin reset/goal ranges to the curriculum
+        # end-state (full-width distribution) so play mode shows the policy
+        # under the widest training conditions, not the narrow start.
         cfg.curriculum = {}
+        cfg.events["reset_robot_joints"].params["joint_delta_deg"] = 20.0
+        cfg.events["reset_base"].params["pose_range"] = {
+            "x":   (-0.05, 0.05),
+            "y":   (-0.05, 0.05),
+            "yaw": (-10.0 * _DEG_TO_RAD, 10.0 * _DEG_TO_RAD),
+        }
+        cfg.events["reset_object_position"].params["x_range"] = (-0.30, 0.30)
+        cfg.events["reset_object_position"].params["y_range"] = (-0.70, -0.30)
+        cfg.events["reset_object_position"].params["z_range"] = (
+            _OBJECT_SPAWN_LO[2], _OBJECT_SPAWN_HI[2],
+        )
+        cfg.commands["object_goal"].x_range = (-0.30, 0.30)
+        cfg.commands["object_goal"].y_range = (-0.70, -0.30)
+        cfg.commands["object_goal"].z_range = (0.025, 0.40)
 
     return cfg
 
