@@ -114,6 +114,16 @@ class EvalConfig:
     record_obs: bool = True
     """If False, skip recording the 33-D obs tensor per step (saves disk)."""
 
+    no_oob_termination: bool = False
+    """If True, drop the `object_out_of_bounds` termination so trials always
+    run to time_out. Useful for diagnosing whether OOB triggers are real
+    failures or a bug in the bounds check."""
+
+    episode_length_s: float = 10.0
+    """Outer episode length in seconds. Default matches the training task.
+    Lower this (e.g. 2.5) plus high `trials_per_env` to sample many
+    independent resets for a diagnostic OOB study."""
+
 
 # ---------------------------------------------------------------------------
 # Resolve checkpoint (file > wandb)
@@ -317,8 +327,17 @@ def run_eval(task_id: str, cfg: EvalConfig) -> None:
     # in pick_cube_osc sets episode_length_s=1e9, which we DON'T want for
     # eval — we need natural time-outs to delimit trials. Restore the
     # training episode length.
-    env_cfg.episode_length_s = 10.0
+    env_cfg.episode_length_s = float(cfg.episode_length_s)
     env_cfg.observations["actor"].enable_corruption = False
+
+    if cfg.no_oob_termination:
+        # Diagnostic: drop the cube-out-of-bounds terminator. Every trial
+        # then runs to natural time_out, so we get full trajectories even
+        # when the cube would normally be flagged OOB.
+        for k in list(env_cfg.terminations.keys()):
+            if "out_of_bounds" in k:
+                del env_cfg.terminations[k]
+                print(f"[INFO] Dropped termination term: {k}")
 
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)

@@ -1035,7 +1035,10 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "object_entity_name": "cube",
                 "home_pos": _HOME_POS,
-                "workspace_half": (0.20, 0.20, 0.30),
+                # workspace_half left at function default (0.35, 0.25, 0.40)
+                # so it envelopes the curriculum-end cube spawn ranges.
+                # See pick_cube_osc.py git history (commit 845197d) where
+                # the default was widened.
             },
         ),
     }
