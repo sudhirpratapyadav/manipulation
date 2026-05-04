@@ -264,3 +264,19 @@ WANDB_API_KEY=wandb_v1_DbIrV2yxipZbymtBPEeM08CTnxH_7eefmb9Dkda9ZI352h4XltVI4nJxX
 
 
 WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 uv run play Mjlab-Open-Drawer-Osc-Kinova --viewer viser --num-envs 4 --wandb-run-path sudhirpratapyadav-indian-institute-of-technology-jodhpur/mjlab-kinova-tasks-osc/5pro663s
+
+
+
+WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 uv run play Mjlab-Pick-Cube-Distill-Osc-Kinova --viewer viser  --num-envs 4  --checkpoint-file logs/rsl_rl/kinova_pick_cube_distill_osc/2026-05-03_13-25-13_A_02_full/model_700.pt
+
+
+# === Phase A distillation: state -> vision (DAgger, MSE on actions) ===
+# teacher = trained pick_cube_osc PPO actor (wandb run jn3l22j9)
+# launch (foreground)
+env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train-distill --teacher-ckpt wandb/run-20260430_220905-jn3l22j9/files/model_4999.pt --env.scene.num-envs 1024 --agent.max-iterations 2000 --agent.save-interval 100 --agent.wandb-project mjlab-kinova-tasks-osc-vision --agent.experiment-name kinova_pick_cube_distill_osc --agent.run-name A_03_cams64 --agent.wandb-tags '("phase_a","dagger_mse","teacher_jn3l22j9","cams64")' --video True --video-length 100 --video-interval 200
+
+# launch (background, log to file)
+nohup env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=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 WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur CUDA_VISIBLE_DEVICES=1 uv run train-distill --teacher-ckpt wandb/run-20260430_220905-jn3l22j9/files/model_4999.pt --env.scene.num-envs 1024 --agent.max-iterations 2000 --agent.save-interval 100 --agent.wandb-project mjlab-kinova-tasks-osc-vision --agent.experiment-name kinova_pick_cube_distill_osc --agent.run-name A_03_cams64 --agent.wandb-tags '("phase_a","dagger_mse","teacher_jn3l22j9","cams64")' --video True --video-length 100 --video-interval 200 > logs/distill_A_03_cams64.log 2>&1 &
+
+# play a saved distillation checkpoint
+WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 uv run play Mjlab-Pick-Cube-Distill-Osc-Kinova --viewer viser --num-envs 4 --checkpoint-file logs/rsl_rl/kinova_pick_cube_distill_osc/<TS>_<run-name>/model_1999.pt

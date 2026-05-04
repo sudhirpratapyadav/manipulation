@@ -30,6 +30,15 @@ from kinova_tasks.tasks.pick_cube_osc import (
     kinova_pick_cube_osc_env_cfg,
     kinova_pick_cube_osc_ppo_cfg,
 )
+from kinova_tasks.tasks.pick_cube_vision_osc import (
+    kinova_pick_cube_vision_osc_env_cfg,
+    kinova_pick_cube_vision_osc_ppo_cfg,
+)
+from kinova_tasks.tasks.pick_cube_distill_osc import (
+    kinova_pick_cube_distill_osc_env_cfg,
+    kinova_pick_cube_distill_osc_runner_cfg,
+)
+from kinova_tasks.distill_runner import MjlabDistillationRunner
 from kinova_tasks.tasks.open_door_osc import (
     kinova_open_door_osc_env_cfg,
     kinova_open_door_osc_ppo_cfg,
@@ -99,6 +108,24 @@ register_mjlab_task(
     env_cfg=kinova_pick_cube_osc_env_cfg(),
     play_env_cfg=kinova_pick_cube_osc_env_cfg(play=True),
     rl_cfg=kinova_pick_cube_osc_ppo_cfg(),
+)
+
+# Pick cube task (OSC + RGB wrist camera)
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Vision-Osc-Kinova",
+    env_cfg=kinova_pick_cube_vision_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_vision_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_vision_osc_ppo_cfg(),
+)
+
+# Phase A: state -> vision distillation (DAgger, MSE on actions).
+# Teacher = trained pick_cube_osc PPO actor (wandb run jn3l22j9).
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
 )
 
 # Open door task (OSC torque control + gripper)

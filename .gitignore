@@ -52,6 +52,7 @@ htmlcov/
 *.log
 wandb/
 logs/
+videos/
 
 # Checkpoints and results
 checkpoints/

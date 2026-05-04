@@ -131,7 +131,7 @@
                     <joint name="joint_7" class="arm_joint_small" range="-6.28318 6.28318"/>
                     <geom class="visual" mesh="bracelet_with_vision_link"/>
                     <geom class="collision" mesh="bracelet_with_vision_link"/>
-                    <camera name="wrist" pos="0 -0.05639 -0.058475" quat="0 0 0 1" fovy="41.83792730009236"
+                    <camera name="wrist" pos="0 -0.06639 -0.098475" quat="0 0 -0.087156 0.996195" fovy="75.0"
                       resolution="640 480"/>
                     <!-- <site name="pinch_site" pos="0 0 -0.12" quat="0 1 0 0" type="sphere" size="0.01" rgba="1 0 0 0.5" group="1"/> -->
                     <site name="pinch_site" pos="0 0 -0.211525" quat="0 1 0 0" type="sphere" size="0.01" rgba="1 0 0 0.5" group="1"/>
