@@ -32,7 +32,7 @@ from mjlab.utils.wrappers import VideoRecorder
 import kinova_tasks  # noqa: F401
 
 
-_TASK_ID = "Mjlab-Pick-Cube-Distill-Osc-Kinova"
+_DEFAULT_TASK_ID = "Mjlab-Pick-Cube-Distill-Osc-Kinova"
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,8 @@ class DistillTrainConfig:
     agent: RslRlBaseRunnerCfg
     teacher_ckpt: str
     """Local path to the trained PPO checkpoint (the teacher)."""
+    task_id: str = _DEFAULT_TASK_ID
+    """Registered task id whose runner_cls + env+agent cfg this run uses."""
     video: bool = False
     video_length: int = 200
     video_interval: int = 2000
@@ -52,7 +54,7 @@ class DistillTrainConfig:
         env_cfg = load_env_cfg(task_id)
         agent_cfg = load_rl_cfg(task_id)
         return DistillTrainConfig(
-            env=env_cfg, agent=agent_cfg, teacher_ckpt=teacher_ckpt
+            env=env_cfg, agent=agent_cfg, teacher_ckpt=teacher_ckpt, task_id=task_id
         )
 
 
@@ -106,10 +108,10 @@ def run_distill(cfg: DistillTrainConfig, log_dir: Path) -> None:
     agent_cfg = asdict(cfg.agent)
     env_cfg = asdict(cfg.env)
 
-    runner_cls = load_runner_cls(_TASK_ID)
+    runner_cls = load_runner_cls(cfg.task_id)
     if runner_cls is None:
         raise RuntimeError(
-            f"Task '{_TASK_ID}' has no runner_cls; expected MjlabDistillationRunner."
+            f"Task '{cfg.task_id}' has no runner_cls; expected MjlabDistillationRunner."
         )
 
     if rank == 0:
@@ -157,10 +159,23 @@ def launch_distill(args: DistillTrainConfig) -> None:
 
 
 def main():
+    # Two-pass parse: pull --task-id out first so we can build the right
+    # default env/agent cfg for tyro's defaults.  Without this, tyro would
+    # always anchor on _DEFAULT_TASK_ID's cfg even when the user passes a
+    # different task id.
+    pre_task_id = _DEFAULT_TASK_ID
+    for i, a in enumerate(sys.argv[1:], start=1):
+        if a == "--task-id" and i + 1 < len(sys.argv):
+            pre_task_id = sys.argv[i + 1]
+            break
+        if a.startswith("--task-id="):
+            pre_task_id = a.split("=", 1)[1]
+            break
+
     args = tyro.cli(
         DistillTrainConfig,
         default=DistillTrainConfig.from_task(
-            _TASK_ID, teacher_ckpt="<REQUIRED>"
+            pre_task_id, teacher_ckpt="<REQUIRED>"
         ),
         prog=sys.argv[0],
         config=mjlab.TYRO_FLAGS,

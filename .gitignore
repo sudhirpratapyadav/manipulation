@@ -63,3 +63,13 @@ runs/
 *.tmp
 *.bak
 .cache/
+
+# Pretrained encoder checkpoints (downloaded, not committed)
+assets/mcr/*.pth
+assets/mcr/*.pt
+
+# Embedded external repos (cloned, not committed)
+sim2real_vision/SplatSim/
+
+# Claude Code project-local settings (per-machine)
+.claude/

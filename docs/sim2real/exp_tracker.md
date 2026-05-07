@@ -130,11 +130,239 @@ plan and `state_to_vision_transfer.md` for context.
   - Iter 0–2 behavior loss: 3.21 → 3.61 → 4.06 (expected early
     DAgger trajectory; converges over later iters)
 
+### A_03_cams64_resume_20k (continuation of A_03_cams64)
+
+- **Status:** done (resumed from `model_1999.pt`, ran iter 2000 → 10800)
+- **Training-env metrics at iter 10800:**
+  - `Loss/behavior` 0.54 → 0.17 (monotone)
+  - `Episode_Reward/goal_precise` 0.71 (teacher 0.66)
+  - `Episode_Metrics/object_to_goal_error` 0.156 m
+  - `Episode_Metrics/ee_to_object_error` 0.055 m
+  - `Episode_Termination/object_out_of_bounds` ~26%
+- **Reading:** Pure DAgger plateaued reasonably. OOB ~26% is the
+  dominant failure mode now, not "didn't reach the cube". User
+  decided OOB is acceptable; visual encoder is the next move.
+- **A_03 fresh-start reference curve** (used as ceiling for MCR runs):
+  iter 10 → 4.76 / 30 → 3.89 / 100 → 3.58 / 200 → 2.86 / 500 → 1.71
+  / 1000 → 0.68 / 1999 → 0.45 (read from
+  `2026-05-03_22-28-12_A_03_cams64` events file).
+
+---
+
+## Phase A.MCR — frozen MCR ResNet-50 encoder swap
+
+Plan: `plan_v2.md`. Encoder: `src/kinova_tasks/encoders/mcr_encoder.py`.
+Goal: replace from-scratch spatial-softmax CNN with a frozen MCR
+ResNet-50 (Jiang et al. 2024, [arXiv:2410.22325](https://arxiv.org/abs/2410.22325)).
+
+Common setup unless noted:
+- env: `Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova` (same vision env as A_03,
+  64×64 wrist + 64×64 d455).
+- encoder: `FrozenMCREncoder` — frozen ResNet-50, MCR weights,
+  64→224 bilinear upsample, ImageNet normalize, per-camera LayerNorm
+  (added during smoke testing — without it the head can't absorb the
+  unbounded 4096-D ResNet activations).
+- teacher: same `model_4999.pt` from wandb `jn3l22j9`.
+- num_envs: 1024. num_steps_per_env: 24.
+- throughput: ~680 fps (~36 s/iter) — **7.7× slower** than A_03's
+  ~3000 fps (4.6 s/iter), driven by the ResNet-50 forward at 224×224.
+  Combined with ~3-4× slower convergence rate, MCR is a **~12× total
+  compute multiplier** vs the from-scratch CNN baseline.
+
+### MCR_01_full
+
+- **Status:** killed at iter 109
+- **Encoder:** MCR ResNet-50, avg-pool, LayerNorm
+- **lr:** 1e-3 (RSL-RL default for distillation)
+- **Result:** rolling-min plateau ~5.5 from iter 20 onwards. lr too
+  high — Adam updates large enough that stochastic student rollouts
+  re-create the high-loss regime each iter.
+
+### MCR_02_lr3e4
+
+- **Status:** running (launched 2026-05-06 ~23:55, iter ~425 at
+  this writeup, ETA ~46h to iter 5000)
+- **wandb:** run name `MCR_02_lr3e4`, project `mjlab-kinova-tasks-osc-vision`
+- **Encoder:** MCR ResNet-50, avg-pool (4096-D), LayerNorm
+- **lr:** 3e-4 (lower than MCR_01)
+- **Local log:** `logs/distill_MCR_02_lr3e4.log`
+- **Curve so far** (rmin30 envelope):
+  - iter 50: ~5.4    | A_03 ref: 3.97
+  - iter 100: ~5.0   | A_03 ref: 3.58
+  - iter 200: 4.51   | A_03 ref: 2.86
+  - iter 300: 4.18   | A_03 ref: 2.40
+  - iter 400: 3.19   | A_03 ref: ~2.0
+  - **delta vs A_03: ~1.2-1.5 units behind, slowly closing.**
+- **Reading:** Not plateaued — slow envelope decay. Oscillation
+  amplitude ~1.5 units around a slowly-falling minimum. Will continue
+  to iter 1000-2000 to see whether it can match A_03's iter-500 (1.71).
+
+### MCR_03_ss
+
+- **Status:** killed at iter 84
+- **Variant:** Cut ResNet at `layer4` → spatial-softmax over
+  `(2048, 7, 7)` map → `(B, 8192)` keypoint output. Hypothesis:
+  avg-pool throws away spatial info that the policy needs.
+- **lr:** 3e-4
+- **Result:** rolling-min flat at 5.05–5.09 over iters 30-84 (delta
+  -0.05 between iter-20-50 and last-30 windows — i.e. *no* improvement).
+  At the same iter range MCR_02 had +0.86 improvement.
+- **Reading:** Spatial-softmax over coarse layer4 features doesn't
+  help.  Each of the 7×7 cells aggregates ~32×32 of input, so the
+  resulting "keypoint" is too coarse to carry useful localization.
+  The from-scratch CNN's spatial-softmax works because it operates on
+  much-shallower feature maps with smaller receptive fields.
+
+### MCR_04_widehead
+
+- **Status:** killed at iter 39 (relaunched once — first try died on
+  `uv run` failing to fetch `kortex_api`; future MCR runs use
+  `.venv/bin/train-distill` directly)
+- **Variant:** avg-pool encoder + wider MLP head `(1024, 512, 256, 128)`
+  instead of `(512, 256, 128)`. Hypothesis: head too narrow to project
+  4096-D feature into 7-D action.
+- **lr:** 3e-4
+- **Result:** apples-to-apples vs MCR_02 at iters 0-30: window-min
+  diff ±0.1. **Wider head is identical to narrow head.** Head capacity
+  is not the bottleneck.
+- **Reading:** The slowness comes from the encoder–task mismatch, not
+  from an under-parameterized head.
+
+### R3M_05_droid
+
+- **Status:** done (killed at iter 789; production winner)
+- **wandb:** run name `R3M_05_droid` (logged under same MCR project +
+  experiment by reusing `Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova` task
+  with `MCR_WEIGHTS_PATH=assets/mcr/r3mdroid_resnet50.pth` env var)
+- **Encoder:** ResNet-50 pretrained on DROID with R3M's
+  time-contrastive + L1-sparsity objective, frozen. Same architecture
+  / pipeline as MCR_02 but different pretrained weights.
+- **lr:** 3e-4
+- **Local log:** `logs/distill_R3M_05_droid.log`
+- **Production ckpt:** `model_600.pt`
+- **Full envelope (50-iter window-min):**
+  - iter   0- 49: 3.15
+  - iter 100-149: 3.73
+  - iter 200-249: 2.22
+  - iter 300-349: 1.78
+  - iter 400-449: 1.65
+  - iter 500-549: 1.51
+  - **iter 550-599: 1.44 ← best**
+  - iter 600-649: 1.52
+  - iter 650-699: 1.69 (rising)
+  - iter 700-749: 1.76 (continuing up)
+- **Reading:** R3M-DROID dramatically outperforms MCR — at iter 600
+  R3M_05 was at 1.44 while MCR_02 was at ~3 (killed).  R3M beat A_03's
+  reference curve through iter ~500, then plateaued / diverged late
+  while A_03 continued monotonically to 0.68@1000.  Sim2real-relevant
+  conclusion: R3M-DROID frozen is the right encoder for this
+  pipeline; from-scratch CNN still wins asymptotic loss.
+
+### R3M_06_lr1e3
+
+- **Status:** killed at iter 84
+- **Variant:** R3M-DROID frozen + lr 1e-3 (tests if R3M tolerates a
+  higher lr than MCR_01 did).
+- **Result:** 0.4-0.7 units worse than R3M_05 across iters 25-74.
+  Same divergence pattern as MCR_01 — bigger oscillations, higher
+  envelope minimum.  lr=3e-4 is the right setting for this regime
+  regardless of pretrained-weights choice.
+
+### R3M_07_ll4
+
+- **Status:** killed at iter 144 (relaunched once — first attempt OOM'd
+  at 41 GB on 1024 envs because layer4 backprop activations don't fit;
+  second attempt at 512 envs ran fine).
+- **Variant:** R3M-DROID with `layer4` (last ResNet stage) unfrozen
+  via the `unfreeze_layers=("layer4",)` cnn_cfg flag.  ~15M trainable
+  params added.  Tests whether partial fine-tuning lets the encoder
+  adapt to pick-cube geometry.
+- **Result (env-step parity vs R3M_05):**
+  - k=50-74 (R3M_07 iters / R3M_05 iters 100-149): R3M_07 +0.45 *worse*
+  - k=75-99 (R3M_07 iters / R3M_05 iters 150-199): R3M_07 +1.06 *worse*
+  - k=100-124 (R3M_07 iters / R3M_05 iters 200-249): R3M_07 +0.63 *worse*
+- **Reading:** Layer4 fine-tuning **HURTS** at fixed env-step budget.
+  Frozen R3M is the production setup.  The DROID-pretrained features
+  are good as-is; allowing them to drift adds noise without helping
+  pick-cube performance.
+- **Caveat (drove the rerun decision):** killed at only 144 iters; the
+  early phase is noisy and a longer run may behave differently.  Queued
+  for full-3.5k rerun (R3M_07_ll4_v2).
+
+### R3M_08_smallhead (running)
+
+- **Status:** running (iter 359 at this writeup, target 5000)
+- **Variant:** R3M-DROID frozen + hd=(256, 128) MLP head (smaller than
+  R3M_05's (512, 256, 128)).  Tests whether the 4096-D pretrained
+  feature is so well-structured that even a tiny head suffices.
+- **Window-min comparison vs R3M_05 (head-to-head):**
+  - iter   0- 24: 3.10 vs 3.15 (-0.05)
+  - iter  25- 49: 5.24 vs 5.36 (-0.12)
+  - iter  50- 74: 5.02 vs 4.67 (+0.35)
+  - iter  75- 99: 4.40 vs 4.69 (-0.29)
+  - iter 100-124: 4.24 vs 3.78 (+0.46)
+- **Latest:** iter 348 rmin30 = 1.88 (vs R3M_05 at iter 308: 1.86).
+  **Essentially tied with R3M_05.**
+- **Reading:** Head capacity does not matter — even the small head
+  matches the standard one.  R3M-DROID features are well-formatted
+  enough that any reasonable readout works.
+
+### R3M_09_lr1e4 (running)
+
+- **Status:** running (just launched, iter 4 at this writeup)
+- **Variant:** R3M-DROID frozen + lr=1e-4 (lower than R3M_05's 3e-4).
+  Tests whether slower lr prevents the late-phase plateau / divergence
+  R3M_05 showed past iter 600.
+
+### Phase A.MCR — interim conclusions (after 9 runs)
+
+1. **R3M-DROID >> MCR-DROID** for this task (1.44 vs 2.97 at iter 600).
+   Contradicts the Vakil 2025 ranking; the pick-cube + DAgger + ResNet-50
+   regime favors R3M's time-contrastive objective over MCR's
+   action-prediction objective.
+2. **Frozen R3M beats from-scratch CNN in mid-phase, loses in late.**
+   - Iter 200-500: R3M_05 1.65 ≤ A_03 1.71
+   - Iter 500-1000: A_03 0.68 << R3M_05 plateau ~1.44
+   - Frozen pretrained features have a **convergence floor** the
+     from-scratch CNN doesn't.
+3. **Layer4 unfreezing HURTS** at fixed env-step budget. Production
+   setup = fully frozen.
+4. **Head capacity doesn't matter.** (256,128), (512,256,128), and
+   (1024,512,256,128) all converge identically with R3M frozen.
+5. **lr=3e-4 is right** for ResNet-50 distillation; lr=1e-3 destabilizes
+   for both MCR and R3M.
+6. **Spatial-softmax over coarse layer4 (7×7) features does NOT
+   substitute for the from-scratch CNN's keypoint output.**
+7. **Throughput: ~680 fps vs A_03's ~3000 fps** (7.7× slower wall
+   clock per iter).  Combined with the asymptotic loss gap, MCR/R3M
+   are ~8× more compute for a *worse* asymptote on sim alone.
+
+### The kill-too-early correction
+
+**Critical methodological correction:** several of the 9 runs above
+were killed at iter 39-150 based on early-iter signal that turned out
+NOT to predict end behavior.  R3M_05 looked tied with MCR at iter 39,
+then broke away by iter 200 to become the production winner.  Without
+that lucky long-watch, R3M would have been killed alongside MCR.
+
+**New rule:** every run goes 3.5k iters minimum before any decision.
+Reruns queued (in priority order, ~35h each on 2 GPUs):
+
+- **MCR_02_v2** — MCR avg-pool full 3.5k (was killed at 528)
+- **R3M_07_ll4_v2** — layer4 unfrozen full 3.5k at 512 envs (was killed at 144)
+- **MCR_03_ss_v2** — spatial-softmax full 3.5k (was killed at 84)
+- **MCR_04_widehead_v2** — wider head full 3.5k (was killed at 39)
+
+Skipping reruns of MCR_01 and R3M_06 (lr=1e-3) — both showed
+unambiguous early-iter divergence that's known not to recover.
+Total queued time: ~3 days on 2 GPUs after R3M_08 + R3M_09 finish.
+
 ---
 
 ## Phase B — state-prediction aux loss
 
-_Not started. Templates to be added when Phase A motivates this._
+_Not started. Folded into `plan_v1.md` but plan_v2 deprioritized this
+in favor of the encoder swap. Revisit once Phase A.MCR completes._
 
 ---
 

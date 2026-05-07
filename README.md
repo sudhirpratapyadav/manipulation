@@ -280,3 +280,73 @@ nohup env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 WANDB_API_KEY=wandb_v1_DbIrV2yxip
 
 # play a saved distillation checkpoint
 WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 uv run play Mjlab-Pick-Cube-Distill-Osc-Kinova --viewer viser --num-envs 4 --checkpoint-file logs/rsl_rl/kinova_pick_cube_distill_osc/<TS>_<run-name>/model_1999.pt
+
+
+# === Phase A.MCR — frozen pretrained ResNet-50 distillation ===
+# Plan: docs/sim2real/plan_v2.md.  Encoder: src/kinova_tasks/encoders/mcr_encoder.py.
+# Results: docs/sim2real/exp_tracker.md (Phase A.MCR section).
+#
+# Verdict (after MCR_01..R3M_09): R3M-DROID weights >> MCR weights for this task,
+# despite Vakil 2025's ranking saying the opposite. Frozen R3M-DROID with the
+# default (512,256,128) head and lr=3e-4 is the production setup.  Layer4
+# unfreezing HURTS at fixed env-step budget; head width does NOT matter.
+#
+# IMPORTANT: launching with `uv run` may fail with "kortex_api timeout" if uv
+# tries to refresh deps.  Use the direct binary `.venv/bin/train-distill` instead.
+
+# One-time setup: download both pretrained ResNet-50 checkpoints (~90 MB each).
+mkdir -p assets/mcr
+curl -L -o assets/mcr/mcr_resnet50.pth \
+  "https://huggingface.co/GqJiang/robots-pretrain-robots/resolve/main/mcr_resnet50.pth"
+curl -L -o assets/mcr/r3mdroid_resnet50.pth \
+  "https://huggingface.co/GqJiang/robots-pretrain-robots/resolve/main/r3mdroid_resnet50.pth"
+
+# === Available task variants (all use same env, same teacher, vary the student) ===
+#   Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova            avg-pool, hd=(512,256,128) — production base
+#   Mjlab-Pick-Cube-Distill-Mcr-Ss-Osc-Kinova         spatial-softmax over layer4
+#   Mjlab-Pick-Cube-Distill-Mcr-Widehead-Osc-Kinova   hd=(1024,512,256,128)
+#   Mjlab-Pick-Cube-Distill-Mcr-Smallhead-Osc-Kinova  hd=(256,128)
+#   Mjlab-Pick-Cube-Distill-Mcr-Ll4-Osc-Kinova        layer4 unfrozen — needs --env.scene.num-envs 512 (OOM at 1024)
+# To switch encoder weights between MCR and R3M-DROID, set MCR_WEIGHTS_PATH:
+#   MCR_WEIGHTS_PATH=assets/mcr/mcr_resnet50.pth         (default if unset)
+#   MCR_WEIGHTS_PATH=assets/mcr/r3mdroid_resnet50.pth    (recommended)
+
+# === The recommended run: R3M-DROID, frozen, default head, lr=3e-4, 5000 iters ===
+# (background, with wandb)
+nohup env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 \
+  MCR_WEIGHTS_PATH=assets/mcr/r3mdroid_resnet50.pth \
+  WANDB_API_KEY=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 \
+  WANDB_ENTITY=sudhirpratapyadav-indian-institute-of-technology-jodhpur \
+  CUDA_VISIBLE_DEVICES=1 \
+  .venv/bin/train-distill \
+    --task-id Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova \
+    --teacher-ckpt wandb/run-20260430_220905-jn3l22j9/files/model_4999.pt \
+    --env.scene.num-envs 1024 \
+    --agent.max-iterations 5000 \
+    --agent.save-interval 100 \
+    --agent.wandb-project mjlab-kinova-tasks-osc-vision \
+    --agent.experiment-name kinova_pick_cube_distill_mcr_osc \
+    --agent.run-name R3M_REPRO \
+    --agent.wandb-tags '("phase_a","r3m","frozen_resnet50","avg_pool","layernorm","r3mdroid","teacher_jn3l22j9","lr3e-4")' \
+    --agent.algorithm.learning-rate 3e-4 \
+    --video True --video-length 100 --video-interval 200 \
+  > logs/distill_R3M_REPRO.log 2>&1 &
+
+# === Smoke (32 envs × 30 iters, no wandb, ~5 minutes wall clock) ===
+env MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 \
+  MCR_WEIGHTS_PATH=assets/mcr/r3mdroid_resnet50.pth \
+  CUDA_VISIBLE_DEVICES=0 \
+  .venv/bin/train-distill \
+    --task-id Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova \
+    --teacher-ckpt wandb/run-20260430_220905-jn3l22j9/files/model_4999.pt \
+    --env.scene.num-envs 32 \
+    --agent.max-iterations 30 \
+    --agent.save-interval 30 \
+    --agent.experiment-name kinova_pick_cube_distill_mcr_osc_smoke \
+    --agent.run-name R3M_smoke \
+    --agent.logger tensorboard
+
+# === Play a saved MCR/R3M distillation checkpoint ===
+WANDB_API_KEY=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 CUDA_VISIBLE_DEVICES=1 MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=0 MCR_WEIGHTS_PATH=assets/mcr/r3mdroid_resnet50.pth \
+  uv run play Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova --viewer viser --num-envs 4 \
+  --checkpoint-file logs/rsl_rl/kinova_pick_cube_distill_mcr_osc/<TS>_<run-name>/model_<N>.pt

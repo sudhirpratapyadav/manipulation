@@ -38,6 +38,14 @@ from kinova_tasks.tasks.pick_cube_distill_osc import (
     kinova_pick_cube_distill_osc_env_cfg,
     kinova_pick_cube_distill_osc_runner_cfg,
 )
+from kinova_tasks.tasks.pick_cube_distill_mcr_osc import (
+    kinova_pick_cube_distill_mcr_osc_env_cfg,
+    kinova_pick_cube_distill_mcr_osc_runner_cfg,
+    kinova_pick_cube_distill_mcr_ss_osc_runner_cfg,
+    kinova_pick_cube_distill_mcr_widehead_osc_runner_cfg,
+    kinova_pick_cube_distill_mcr_ll4_osc_runner_cfg,
+    kinova_pick_cube_distill_mcr_smallhead_osc_runner_cfg,
+)
 from kinova_tasks.distill_runner import MjlabDistillationRunner
 from kinova_tasks.tasks.open_door_osc import (
     kinova_open_door_osc_env_cfg,
@@ -125,6 +133,62 @@ register_mjlab_task(
     env_cfg=kinova_pick_cube_distill_osc_env_cfg(),
     play_env_cfg=kinova_pick_cube_distill_osc_env_cfg(play=True),
     rl_cfg=kinova_pick_cube_distill_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
+)
+
+# Phase A (MCR variant): same env / teacher / DAgger, but the student's
+# visual encoder is a frozen MCR ResNet-50 instead of the from-scratch
+# spatial-softmax CNN.  See docs/sim2real/plan_v2.md.
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Mcr-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_mcr_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
+)
+
+# Phase A (MCR + spatial-softmax variant): MCR ResNet-50 cut at layer4
+# with spatial-softmax over the (2048, 7, 7) map → preserves spatial
+# localization info that global avg-pool throws away.  8192-D feature.
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Mcr-Ss-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_mcr_ss_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
+)
+
+# Phase A (MCR + wider MLP head): same avg-pool encoder as Mcr-Osc but
+# hidden_dims (1024, 512, 256, 128) so the head has more capacity to
+# project the 4096-D feature into 7-D actions.
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Mcr-Widehead-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_mcr_widehead_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
+)
+
+# Phase A (MCR + last-stage unfreeze): avg-pool encoder with `layer4`
+# unfrozen — partial fine-tuning of the last ResNet stage to let the
+# encoder adapt to pick-cube geometry.  Works for either MCR or R3M
+# weights via MCR_WEIGHTS_PATH env var.
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Mcr-Ll4-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_mcr_ll4_osc_runner_cfg(),
+    runner_cls=MjlabDistillationRunner,
+)
+
+# Phase A (MCR + small MLP head): avg-pool encoder with hidden_dims
+# (256, 128) — tests whether the pretrained feature is so well-
+# structured that a smaller head suffices.
+register_mjlab_task(
+    task_id="Mjlab-Pick-Cube-Distill-Mcr-Smallhead-Osc-Kinova",
+    env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(),
+    play_env_cfg=kinova_pick_cube_distill_mcr_osc_env_cfg(play=True),
+    rl_cfg=kinova_pick_cube_distill_mcr_smallhead_osc_runner_cfg(),
     runner_cls=MjlabDistillationRunner,
 )
 
