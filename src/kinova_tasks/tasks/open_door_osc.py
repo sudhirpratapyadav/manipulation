@@ -78,24 +78,41 @@ GRIPPER_OPEN_JOINT_POS = {
 }
 GRIPPER_JOINT_NAMES = tuple(GRIPPER_OPEN_JOINT_POS.keys())
 
-# Door spawn range (local frame) — door_base mocap body position
-# x: ±2 cm, y: 10 cm range (matching mjlab_old randomisation tightness)
-_DOOR_POS_LO = (0.7, -0.05, 0.45)
-_DOOR_POS_HI = ( 0.9, 0.15, 0.65)
+# ---------------------------------------------------------------------------
+# Door geometry (must match door.xml).
+#
+#   Panel: 30 cm wide × 75 cm tall × 2 cm thick.
+#   Hinge: at door_base (0, -0.3, 0), axis +z. Panel center is at door_base
+#          (0, -0.15, 0); the panel spans y ∈ [-0.30, 0.00] in door_base.
+#   Handle bar: vertical, centered at door_base (-0.044, -0.05, 0.215).
+#               (5 cm in from the free edge, 16 cm down from the top.)
+# ---------------------------------------------------------------------------
+_PANEL_HALF_WIDTH  = 0.15    # m  (along y in door_base)
+_PANEL_HALF_HEIGHT = 0.375   # m  (along z in door_base)
+_PANEL_HALF_THICK  = 0.01    # m  (along x in door_base)
 
-# Door initial hinge angle range at reset (radians): 0° – 80°
-_DOOR_INIT_ANGLE_LO =  0.0 * _DEG_TO_RAD
-_DOOR_INIT_ANGLE_HI = 10.0 * _DEG_TO_RAD
+_HINGE_OFFSET = (0.0, -0.3, 0.0)              # pivot in door_base frame
+_HANDLE_FROM_HINGE = (-0.039, 0.25, 0.215)    # handle relative to hinge at θ=0
 
-# Door goal angle range (radians): 60° – 90°
+# Door spawn range (door_base mocap position in robot-local frame).
+# Randomized uniformly per reset:
+#   x ∈ [0.60, 0.90]  (center 0.75, ±15 cm — narrower to keep door reachable)
+#   y ∈ [-0.20, 0.20] (center 0.00, ±20 cm)
+#   z ∈ [-0.05, 0.55] (center 0.25, ±30 cm)
+# Low-z samples let the panel bottom clip through the floor — fine
+# since door_base is a mocap body (kinematic, no contact forces).
+_DOOR_POS_LO = (0.60, -0.20, -0.05)   # (x_lo, y_lo, z_lo)
+_DOOR_POS_HI = (0.90,  0.20,  0.55)   # (x_hi, y_hi, z_hi)
+
+# Door initial hinge angle at reset: pinned to 0° (door fully closed).
+# Hinge has no friction in the XML, so any non-zero init drifts during
+# settling — start exactly closed.
+_DOOR_INIT_ANGLE_LO = 0.0
+_DOOR_INIT_ANGLE_HI = 0.0
+
+# Door goal angle range (radians): 60° – 90°.
 _DOOR_GOAL_LO = 60.0 * _DEG_TO_RAD
 _DOOR_GOAL_HI = 90.0 * _DEG_TO_RAD
-
-# Door hinge geometry (from door.xml, used for target-handle vis)
-# Hinge pivot in door_base frame: (0, -0.3, 0)
-# Object_site relative to hinge pivot: (-0.04, 0.55, 0)
-_HINGE_OFFSET = (0.0, -0.3, 0.0)          # pivot in door_base frame
-_HANDLE_FROM_HINGE = (-0.04, 0.55, 0.0)   # handle relative to hinge at θ=0
 
 
 # ---------------------------------------------------------------------------
@@ -191,41 +208,38 @@ class DoorGoalCommand(CommandTerm):
         hx, hy, hz = _HINGE_OFFSET
         dx, dy, dz = _HANDLE_FROM_HINGE
 
-        # Door spawn range edges (blue rectangle, drawn once per env)
-        # Corners in local frame; z lifted slightly above floor for visibility
-        spawn_lo = np.array([_DOOR_POS_LO[0], _DOOR_POS_LO[1], 0.02], dtype=np.float32)
-        spawn_hi = np.array([_DOOR_POS_HI[0], _DOOR_POS_HI[1], 0.02], dtype=np.float32)
-        spawn_corners = np.array([
-            [spawn_lo[0], spawn_lo[1], spawn_lo[2]],
-            [spawn_hi[0], spawn_lo[1], spawn_lo[2]],
-            [spawn_lo[0], spawn_hi[1], spawn_lo[2]],
-            [spawn_hi[0], spawn_hi[1], spawn_lo[2]],
+        # door_base mocap spawn volume — wireframe 3D box around
+        # (x_range × y_range × z_range) where the base point can land.
+        x_lo, y_lo, z_lo = _DOOR_POS_LO
+        x_hi, y_hi, z_hi = _DOOR_POS_HI
+        corners = np.array([
+            [x_lo, y_lo, z_lo], [x_hi, y_lo, z_lo],
+            [x_lo, y_hi, z_lo], [x_hi, y_hi, z_lo],
+            [x_lo, y_lo, z_hi], [x_hi, y_lo, z_hi],
+            [x_lo, y_hi, z_hi], [x_hi, y_hi, z_hi],
         ], dtype=np.float32)
-        spawn_edges = [(0, 1), (0, 2), (1, 3), (2, 3)]
+        spawn_edges = [
+            (0, 1), (2, 3), (4, 5), (6, 7),   # x-aligned
+            (0, 2), (1, 3), (4, 6), (5, 7),   # y-aligned
+            (0, 4), (1, 5), (2, 6), (3, 7),   # z-aligned
+        ]
 
         for i in env_indices:
             origin = self._env.scene.env_origins[i].cpu().numpy()
 
-            # Door spawn bounding box (blue)
             for idx, (a, b) in enumerate(spawn_edges):
                 visualizer.add_cylinder(
-                    start=spawn_corners[a] + origin,
-                    end=spawn_corners[b] + origin,
-                    radius=0.004, color=(0.2, 0.5, 1.0, 0.5),
+                    start=corners[a] + origin,
+                    end=corners[b] + origin,
+                    radius=0.003, color=(0.2, 0.5, 1.0, 0.5),
                     label=f"door_spawn_edge_{i}_{idx}",
                 )
 
             door_pos = door.data.root_link_pos_w[i].cpu().numpy()
 
-            # Current handle position (blue sphere, same as object_at_goal_reward vis)
-            handle_ids = door.find_sites("object_site")[0]
-            handle_pos_np = door.data.site_pos_w[i, handle_ids].squeeze(0).cpu().numpy()
-            visualizer.add_sphere(
-                center=handle_pos_np, radius=0.022,
-                color=(0.2, 0.5, 1.0, 0.6), label=f"handle_current_{i}",
-            )
-
-            # Goal handle position (orange sphere)
+            # Goal handle position (orange sphere).
+            # The current handle position is already drawn (green sphere) by
+            # object_at_goal_reward.debug_vis — no need to double up here.
             hinge_w = door_pos + np.array([hx, hy, hz], dtype=np.float32)
             goal_θ = float(self.goal_angle[i, 0].item())
             cos_θ, sin_θ = _math.cos(goal_θ), _math.sin(goal_θ)
@@ -325,19 +339,18 @@ def reset_door(
     door_entity_name: str = "door",
     x_range: tuple[float, float] = (_DOOR_POS_LO[0], _DOOR_POS_HI[0]),
     y_range: tuple[float, float] = (_DOOR_POS_LO[1], _DOOR_POS_HI[1]),
-    z: float = _DOOR_POS_LO[2],
+    z_range: tuple[float, float] = (_DOOR_POS_LO[2], _DOOR_POS_HI[2]),
     init_angle_range: tuple[float, float] = (_DOOR_INIT_ANGLE_LO, _DOOR_INIT_ANGLE_HI),
 ) -> None:
-    """Reset door base position and hinge joint to a randomly sampled initial angle."""
+    """Reset door base position (xyz uniform) and hinge joint angle."""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
     door: Entity = env.scene[door_entity_name]
     n = len(env_ids)
 
-    # Sample door base position (mocap body — use write_mocap_pose_to_sim)
-    lower = torch.tensor([x_range[0], y_range[0], z], device=env.device)
-    upper = torch.tensor([x_range[1], y_range[1], z], device=env.device)
+    lower = torch.tensor([x_range[0], y_range[0], z_range[0]], device=env.device)
+    upper = torch.tensor([x_range[1], y_range[1], z_range[1]], device=env.device)
     pos = sample_uniform(lower, upper, (n, 3), device=env.device)
     pos = pos + env.scene.env_origins[env_ids]
 
@@ -346,7 +359,6 @@ def reset_door(
     pose = torch.cat([pos, quat], dim=-1)  # (N, 7)
     door.write_mocap_pose_to_sim(pose, env_ids=env_ids)
 
-    # Sample hinge initial angle uniformly from init_angle_range
     jpos = sample_uniform(
         torch.tensor([init_angle_range[0]], device=env.device),
         torch.tensor([init_angle_range[1]], device=env.device),
@@ -734,7 +746,7 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "door_entity_name": "door",
                 "x_range": (_DOOR_POS_LO[0], _DOOR_POS_HI[0]),
                 "y_range": (_DOOR_POS_LO[1], _DOOR_POS_HI[1]),
-                "z": _DOOR_POS_LO[2],
+                "z_range": (_DOOR_POS_LO[2], _DOOR_POS_HI[2]),
                 "init_angle_range": (_DOOR_INIT_ANGLE_LO, _DOOR_INIT_ANGLE_HI),
             },
         ),

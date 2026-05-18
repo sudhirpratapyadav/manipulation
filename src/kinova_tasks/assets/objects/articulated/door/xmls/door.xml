@@ -1,23 +1,8 @@
 <?xml version="1.0"?>
 <mujoco model="door">
   <worldbody>
-    <!-- Door assembly -->
-    <body name="door_base" pos="1.5 0 0.61" mocap="true">
-      <!-- Door frame/barrier -->
-      <geom
-        type="box"
-        name="door_body"
-        size="0.01 0.5 0.8"
-        pos="0.01 0 0.0"
-        condim="3"
-        friction="1 0.03 0.003"
-        rgba="0.5 0.5 0 0.5"
-        contype="2"
-        conaffinity="2"
-        solref="0.01 1"/>
-
-      <!-- Base site positioned at handle location when joint = 0 (closed) -->
-      <site name="base_site" pos="-0.04 0.25 0.0" size="0.01" rgba="0 0 1 0.3"/>
+    <!-- Bare-bones door: just the swinging panel. No frame, no handle geom. -->
+    <body name="door_base" pos="3.0 0 0.61" mocap="true">
 
       <!-- Door panel with hinge -->
       <body name="handle" pos="0 0 0">
@@ -30,36 +15,35 @@
           limited="true"
           damping="0.1"/>
 
-        <!-- Door panel geom -->
+        <!-- Door panel geom: 30 cm wide × 75 cm tall × 2 cm thick.
+             Hinge is at door_base (0, -0.3, 0); panel half-width = 0.15,
+             so panel center sits at y=-0.15 to keep hinge at the left edge. -->
         <geom
           type="box"
           name="door_panel"
-          size="0.01 0.3 0.6"
-          pos="0 0 0"
+          size="0.01 0.15 0.375"
+          pos="0 -0.15 0"
           condim="3"
           friction="1 0.03 0.003"
-          rgba="0 1 0 0.2"
+          rgba="0 1 0 0.4"
           contype="2"
           conaffinity="2"
           solref="0.01 1"/>
 
-        <!-- Handle geom -->
-        <geom
-          type="box"
-          name="handle"
-          pos="-0.04 0.25 0"
-          size="0.01 0.01 0.08"
-          condim="3"
-          friction="1 0.03 0.003"
-          rgba="0 1 0 1"
-          contype="2"
-          conaffinity="2"
-          solref="0.01 1"/>
+        <!-- Handle bar (vertical) + two connectors.
+             Bar 5 cm from the free edge (y=-0.05) and 16 cm from the top (z=+0.215).
+             Handle-to-panel gap = 2.5 cm:
+               panel front face at x=-0.01, bar near-face at x=-0.035, bar half-thickness 0.004
+               → bar center x = -0.039
+               connectors span x ∈ [-0.035, -0.010], center -0.0225, half-length 0.0125. -->
+        <geom type="box" name="handle"           pos="-0.039  -0.05  0.215" size="0.004  0.004 0.05"   condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="2" solref="0.01 1"/>
+        <geom type="box" name="connector_top"    pos="-0.0225 -0.05  0.265" size="0.0125 0.004 0.004" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="2" solref="0.01 1"/>
+        <geom type="box" name="connector_bottom" pos="-0.0225 -0.05  0.165" size="0.0125 0.004 0.004" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="2" solref="0.01 1"/>
 
-        <!-- Object site for observations (manipulation point) -->
+        <!-- Object site at the handle bar center (kept for obs/reward code) -->
         <site
           name="object_site"
-          pos="-0.04 0.25 0"
+          pos="-0.039 -0.05 0.215"
           size="0.01 0.01 0.01"
           rgba="1 0 0 1"/>
       </body>
