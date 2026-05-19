@@ -799,17 +799,21 @@ def kinova_open_door_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
-        # Phase 2: Handle reaches goal position (Gaussian, std=0.10 m)
+        # Phase 2: Handle reaches goal position (Gaussian, std=0.20 m).
+        # Door start->goal chord is ~0.31 m (vs drawer's ~0.20 m), so the
+        # original std=0.10 made the gradient ~200x weaker than drawer's
+        # working setup. Widening to 0.20 m gives a comparable signal at
+        # the closed-door state.
         "move_to_goal": RewardTermCfg(
             func=object_at_goal_reward,
             weight=1.0,
-            params={"std": 0.10},
+            params={"std": 0.20},
         ),
-        # Tight placement bonus (Gaussian, std=0.05 m ~5 cm)
+        # Tight placement bonus (Gaussian, std=0.10 m).
         "goal_precise": RewardTermCfg(
             func=object_at_goal_reward,
             weight=2.0,
-            params={"std": 0.05},
+            params={"std": 0.10},
         ),
         "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.01),
         "joint_pos_limits": RewardTermCfg(
