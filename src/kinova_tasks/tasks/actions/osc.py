@@ -80,6 +80,17 @@ class OperationalSpaceActionCfg(ActionTermCfg):
   kd_ori: float = 40.0
   """Derivative gain for orientation control."""
 
+  damping: float = 1e-4
+  """Damped-least-squares (Tikhonov) coefficient for the task-space inertia
+  inversion: ``Λ = (J M⁻¹ Jᵀ + damping · I)⁻¹``.
+
+  Larger values trade tracking accuracy for numerical stability near
+  kinematic singularities (wrist alignment, fully-extended arm). The default
+  ``1e-4`` is a mild regularizer that matches the previous hard-coded value;
+  bump to ``1e-2``–``1e-1`` for explicit DLS behavior in tasks that drive the
+  arm into / through singular configurations.
+  """
+
   max_torque: float | list[float] | None = None
   """Per-joint torque clipping (Nm). None = no clipping."""
 
@@ -304,7 +315,7 @@ class OperationalSpaceAction(ActionTerm):
     M_inv = torch.linalg.inv(M)                                      # (B, n, n)
     J_T = J.transpose(1, 2)                                          # (B, n, task_dim)
     JMinvJT = torch.bmm(J, torch.bmm(M_inv, J_T))                   # (B, task_dim, task_dim)
-    JMinvJT = JMinvJT + 1e-4 * torch.eye(
+    JMinvJT = JMinvJT + self.cfg.damping * torch.eye(
       self._task_dim, device=self.device
     ).unsqueeze(0)
     Lambda = torch.linalg.inv(JMinvJT)                               # (B, task_dim, task_dim)

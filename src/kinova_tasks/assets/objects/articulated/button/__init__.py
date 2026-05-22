@@ -1,6 +1,6 @@
 """Button object module."""
 
-from mjlab.asset_zoo.objects.articulated.button.button_constants import (
+from .button_constants import (
     BUTTON_INIT_STATE,
     get_button_cfg,
     get_button_spec,

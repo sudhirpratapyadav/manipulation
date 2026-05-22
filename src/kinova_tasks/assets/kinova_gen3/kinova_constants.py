@@ -269,3 +269,49 @@ def get_kinova_robot_cfg_peginhole_osc() -> EntityCfg:
         spec_fn=get_gripper_torque_spec,
         articulation=KINOVA_GRIPPER_TORQUE_ARTICULATION,
     )
+
+
+##
+# Snap-fit horizontal-reach init state (gripper closed, EE faces +X).
+##
+
+# Horizontal home: same arm joints as reach_osc (EE at (0.734, -0.025, 0.523)
+# with tool axis pointing world +X) but gripper closed to hold the snap peg.
+INIT_STATE_SNAP_FIT = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.0),
+    joint_pos={
+        # Arm joints — horizontal reach pose (matches reach_osc _HOME_JOINT_POS)
+        "joint_1": 0.0,                # 0°
+        "joint_2": 0.3490658504,       # 20°
+        "joint_3": 0.0,                # 0°
+        "joint_4": 1.7453292519,       # 100°
+        "joint_5": 0.0,                # 0°
+        "joint_6": -0.5235987756,      # -30°
+        "joint_7": -1.5707963268,      # -90°
+        # Gripper joints — closed (consistent 4-bar linkage equilibrium)
+        "right_driver_joint": 0.503,
+        "right_coupler_joint": 0.001,
+        "right_spring_link_joint": 0.505,
+        "right_follower_joint": -0.485,
+        "left_driver_joint": 0.503,
+        "left_coupler_joint": 0.001,
+        "left_spring_link_joint": 0.505,
+        "left_follower_joint": -0.485,
+    },
+    joint_vel={".*": 0.0},
+)
+
+
+def get_kinova_robot_cfg_snap_fit_osc() -> EntityCfg:
+    """Kinova Gen3 + gripper for snap-fit (horizontal push, OSC torque control).
+
+    EE faces +X (forward) with gripper closed to hold the snap peg. Arm pose
+    is the same as reach_osc; gripper is at the closed equilibrium used by
+    peg-in-hole.
+    """
+    return EntityCfg(
+        init_state=INIT_STATE_SNAP_FIT,
+        collisions=(),
+        spec_fn=get_gripper_torque_spec,
+        articulation=KINOVA_GRIPPER_TORQUE_ARTICULATION,
+    )

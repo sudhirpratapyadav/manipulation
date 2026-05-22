@@ -2,15 +2,18 @@
 <mujoco model="button">
   <worldbody>
     <body name="button_base" pos="0.65 0 0.5" mocap="true">
-      <geom type="box" name="button_body" size="0.1 0.1 0.01" pos="0 0 -0.02" condim="3" friction="1 0.03 0.003" rgba="0.5 0.5 0 0.5" contype="2" conaffinity="1" solref="0.01 1"/>
-      <!-- Base site positioned at handle location when joint = 0 -->
-      <site name="base_site" pos="0.0 0.0 0.1" size="0.01" rgba="0 0 1 0.3"/>
+      <!-- Base plate: 2x2x1 cm. Top surface at button_base z (local z=0). contype/conaffinity=0 -> no collision with anything. -->
+      <geom type="box" name="button_body" size="0.01 0.01 0.005" pos="0 0 -0.005" condim="3" friction="1 0.03 0.003" rgba="0.5 0.5 0 0.5" contype="0" conaffinity="0" solref="0.01 1"/>
+      <!-- Base site at button_base origin (= top of base plate). -->
+      <site name="base_site" pos="0.0 0.0 0.0" size="0.01" rgba="0 0 1 0.3"/>
       <body name="handle">
+        <!-- Slide along z, range [-0.05, 0]: 0 = unpressed (handle bottom 5 cm above base top), -0.05 = fully pressed (handle bottom touches base top). -->
         <joint name="button_slide" type="slide" axis="0 0 1" range="-0.05 0.0" limited="true" damping="5" stiffness="1000"/>
-        <!-- <geom type="box" name="button_panel" size="0.05 0.05 0.01" pos="0 0 0" condim="3" friction="1 0.03 0.003" rgba="0 1 0 0.2" contype="2" conaffinity="1" solref="0.01 1"/> -->
-        <geom type="box" name="handle" pos="0 0 0.1" size="0.03 0.03 0.005" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
-        <!-- Object site for observations (manipulation point) -->
-        <site name="object_site" pos="0 0 0.1" size="0.01 0.01 0.01" rgba="1 0 0 1"/>
+        <!-- Handle: 2x2x1 cm pad. At joint=0, local pos (0,0,0.055) -> bottom at z=0.05, top at z=0.06.
+             contype=2/conaffinity=2 -> collides with robot (also contype=2) but NOT with terrain (contype/conaffinity=1). -->
+        <geom type="box" name="handle" pos="0 0 0.055" size="0.01 0.01 0.005" condim="3" friction="1 0.03 0.003" rgba="0 1 0 1" contype="1" conaffinity="1" solref="0.01 1"/>
+        <!-- Object site for observations (manipulation point) at handle center. -->
+        <site name="object_site" pos="0 0 0.055" size="0.01 0.01 0.01" rgba="1 0 0 1"/>
       </body>
     </body>
   </worldbody>

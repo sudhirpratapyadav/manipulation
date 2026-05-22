@@ -18,6 +18,10 @@ from kinova_tasks.tasks.peg_in_hole_osc import (
     kinova_peg_in_hole_osc_env_cfg,
     kinova_peg_in_hole_osc_ppo_cfg,
 )
+from kinova_tasks.tasks.snap_fit_osc import (
+    kinova_snap_fit_osc_env_cfg,
+    kinova_snap_fit_osc_ppo_cfg,
+)
 from kinova_tasks.tasks.reach_diff_ik import (
     kinova_reach_diff_ik_env_cfg,
     kinova_reach_diff_ik_ppo_cfg,
@@ -51,6 +55,10 @@ from kinova_tasks.tasks.open_door_osc import (
     kinova_open_door_osc_env_cfg,
     kinova_open_door_osc_ppo_cfg,
 )
+from kinova_tasks.tasks.push_button_osc import (
+    kinova_push_button_osc_env_cfg,
+    kinova_push_button_osc_ppo_cfg,
+)
 from kinova_tasks.tasks.open_drawer_osc import (
     kinova_open_drawer_osc_env_cfg,
     kinova_open_drawer_osc_eval_env_cfg,
@@ -60,6 +68,10 @@ from kinova_tasks.tasks.open_drawer_osc import (
     kinova_open_drawer_osc_baseline_dr_env_cfg,
     kinova_open_drawer_osc_baseline_dr_v2_env_cfg,
     kinova_open_drawer_osc_ppo_cfg,
+)
+from kinova_tasks.tasks.recover_upright_jpd import (
+    kinova_recover_upright_env_cfg,
+    kinova_recover_upright_ppo_cfg,
 )
 
 # Joint-space lift task
@@ -92,6 +104,14 @@ register_mjlab_task(
     env_cfg=kinova_peg_in_hole_osc_env_cfg(),
     play_env_cfg=kinova_peg_in_hole_osc_env_cfg(play=True),
     rl_cfg=kinova_peg_in_hole_osc_ppo_cfg(),
+)
+
+# Snap-fit task (horizontal OSC push, gripper closed throughout)
+register_mjlab_task(
+    task_id="Mjlab-Snap-Fit-Osc-Kinova",
+    env_cfg=kinova_snap_fit_osc_env_cfg(),
+    play_env_cfg=kinova_snap_fit_osc_env_cfg(play=True),
+    rl_cfg=kinova_snap_fit_osc_ppo_cfg(),
 )
 
 # Reach task (diff-IK, no gripper)
@@ -192,6 +212,14 @@ register_mjlab_task(
     runner_cls=MjlabDistillationRunner,
 )
 
+# Push button task (OSC torque control + gripper)
+register_mjlab_task(
+    task_id="Mjlab-Push-Button-Osc-Kinova",
+    env_cfg=kinova_push_button_osc_env_cfg(),
+    play_env_cfg=kinova_push_button_osc_env_cfg(play=True),
+    rl_cfg=kinova_push_button_osc_ppo_cfg(),
+)
+
 # Open door task (OSC torque control + gripper)
 register_mjlab_task(
     task_id="Mjlab-Open-Door-Osc-Kinova",
@@ -258,4 +286,13 @@ register_mjlab_task(
     env_cfg=kinova_open_drawer_osc_baseline_dr_v2_env_cfg(),
     play_env_cfg=kinova_open_drawer_osc_baseline_dr_v2_env_cfg(play=True),
     rl_cfg=kinova_open_drawer_osc_ppo_cfg(),
+)
+
+# Self-recovery task — arm starts collapsed on the ground; policy lifts it to
+# a target joint config with joint-PD + gravity-comp control.
+register_mjlab_task(
+    task_id="Mjlab-Recover-Upright-Jpd-Kinova",
+    env_cfg=kinova_recover_upright_env_cfg(),
+    play_env_cfg=kinova_recover_upright_env_cfg(play=True),
+    rl_cfg=kinova_recover_upright_ppo_cfg(),
 )

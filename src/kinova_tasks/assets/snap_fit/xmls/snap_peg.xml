@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<!--
+  Snap-fit male peg: BASE + two HINGED CANTILEVER LIPS (bag-buckle style).
+
+  All dims in metres. No shaft — cantilevers attach directly to the base.
+
+  Peg layout (insertion direction = +X):
+
+       Z ▲
+         │
+     ┌───┴───┐                         ╲
+     │       │                          ╲ ●     ← top lip: capsule arm hinged at
+     │       │                                    base front, sphere tip splayed +Z
+     │ BASE  │
+     │       │                          ╱ ●
+     │       │                         ╱        ← bottom lip: mirror, splayed -Z
+     └───────┘
+                                                +X →
+
+    Base       :  30 × 22 × 22 mm (X × Y × Z) — gripped by Robotiq pads (clamp along Y)
+    Lip arm    :  capsule, ~18 mm long, 1.5 mm radius — visible cantilever
+    Lip tip    :  sphere, 5 mm radius — the rounded contact / latch point
+    Hinge axis :  Y → lips deflect in the X-Z plane
+    Hinge range:  top  [-0.45, 0] rad  (0 = rest splayed; negative = bent inward)
+                  bot  [ 0, +0.45] rad
+    Spring     :  stiffness 0.5 N·m/rad, damping 0.02, ref=0
+    Soft-limit :  very stiff (solreflimit=0.005, solimplimit 0.99 0.999)
+                  → linear early, sharp non-linear ramp near max bend (the "snap")
+
+  Sites (group=4, low-impact):
+    object_site         — peg origin
+    base_back           — back face of base (gripper grasp ref)
+    lip_top_pivot       — top hinge axis (used for "past flap" check)
+    lip_bot_pivot       — bottom hinge axis
+    lip_top_tip         — sphere center of top lip at rest
+    lip_bot_tip         — sphere center of bottom lip at rest
+-->
+<mujoco model="snap_peg">
+  <worldbody>
+    <body name="snap_peg" pos="0.4 0 0.3">
+      <freejoint name="snap_peg_joint"/>
+
+      <!-- ===== Base cube (gripped by gripper). Clamping along world Y. ===== -->
+      <geom type="box" name="snap_peg_base"
+            size="0.015 0.011 0.011"
+            pos="0 0 0"
+            mass="0.020" rgba="0.20 0.55 0.85 1.0"
+            condim="4" friction="3 0.1 0.01"
+            contype="1" conaffinity="1"
+            solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+
+      <!-- ===== Sites on the rigid part (base) ===== -->
+      <site name="object_site"   pos="0 0 0"      size="0.0008" rgba="1 1 1 1" group="4"/>
+      <site name="base_back"     pos="-0.015 0 0" size="0.0008" rgba="1 1 1 1" group="4"/>
+
+      <!-- ===== Top lip: cantilever capsule + sphere tip, hinged at base front =====
+           Pivot at peg-local (0.015, 0, +0.005), at the upper-front edge of the base.
+           Body's euler rotates the local +X axis up by 14° (-0.244 rad about Y),
+           so the arm splays outward in +Z at rest.
+           Joint range -0.45..0 → can bend INWARD (joint negative aligns arm with shaft direction). -->
+      <body name="lip_top" pos="0.015 0 0.005" euler="0 -0.244 0">
+        <joint name="lip_top_hinge" type="hinge" axis="0 1 0"
+               range="-0.45 0" limited="true"
+               springref="0" stiffness="0.5" damping="0.02"
+               armature="0.0001"
+               solreflimit="0.005 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
+        <!-- Capsule arm: 18 mm long along body-+X, 1.5 mm radius. fromto avoids quat. -->
+        <geom type="capsule" name="lip_top_arm"
+              size="0.0015"
+              fromto="0 0 0  0.018 0 0"
+              mass="0.0008" rgba="0.10 0.45 0.75 1.0"
+              condim="4" friction="3 0.1 0.01"
+              contype="1" conaffinity="1"
+              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+        <!-- Sphere tip at end of arm. -->
+        <geom type="sphere" name="lip_top_ball"
+              size="0.005"
+              pos="0.018 0 0"
+              mass="0.0005" rgba="0.10 0.45 0.75 1.0"
+              condim="4" friction="3 0.1 0.01"
+              contype="1" conaffinity="1"
+              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+
+        <site name="lip_top_pivot" pos="0 0 0"     size="0.0008" rgba="1 0.5 0 1" group="4"/>
+        <site name="lip_top_tip"   pos="0.018 0 0" size="0.0008" rgba="1 0.5 0 1" group="4"/>
+      </body>
+
+      <!-- ===== Bottom lip: mirror of top lip ===== -->
+      <body name="lip_bot" pos="0.015 0 -0.005" euler="0 0.244 0">
+        <joint name="lip_bot_hinge" type="hinge" axis="0 1 0"
+               range="0 0.45" limited="true"
+               springref="0" stiffness="0.5" damping="0.02"
+               armature="0.0001"
+               solreflimit="0.005 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
+        <geom type="capsule" name="lip_bot_arm"
+              size="0.0015"
+              fromto="0 0 0  0.018 0 0"
+              mass="0.0008" rgba="0.10 0.45 0.75 1.0"
+              condim="4" friction="3 0.1 0.01"
+              contype="1" conaffinity="1"
+              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+        <geom type="sphere" name="lip_bot_ball"
+              size="0.005"
+              pos="0.018 0 0"
+              mass="0.0005" rgba="0.10 0.45 0.75 1.0"
+              condim="4" friction="3 0.1 0.01"
+              contype="1" conaffinity="1"
+              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+
+        <site name="lip_bot_pivot" pos="0 0 0"     size="0.0008" rgba="1 0.5 0 1" group="4"/>
+        <site name="lip_bot_tip"   pos="0.018 0 0" size="0.0008" rgba="1 0.5 0 1" group="4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

@@ -60,9 +60,10 @@ _RAMP_END_ITER = 3000
 # Constants
 # ---------------------------------------------------------------------------
 
-# Home joint positions (INIT_STATE_PEGINHOLE): arm rotated 90° at joint_1
+# Home joint positions: matches open_door_osc (joint_1 = 0°, arm facing forward
+# along +x in robot-base frame).
 _HOME_JOINT_POS = (
-    1.5707963268,   # joint_1  90°
+    0.0,            # joint_1   0°
     0.5235987756,   # joint_2  30°
     0.0,            # joint_3   0°
     1.5707963268,   # joint_4  90°
@@ -72,19 +73,19 @@ _HOME_JOINT_POS = (
 )
 _DEG_TO_RAD = _math.pi / 180.0
 
-# FK position of pinch_site at INIT_STATE_PEGINHOLE (local frame)
-_HOME_POS = (-0.024850, -0.482624, 0.174564)
+# FK position of pinch_site at the new home config (local frame).
+# Old joint_1=90° put EE at (-0.025, -0.483, 0.175); rotating the home by
+# -90° around z (joint_1: 90° → 0°) maps (x, y) → (y, -x).
+_HOME_POS = (0.482624, -0.024850, 0.174564)
 
-# Spawn / goal bounding boxes (local frame, used in events + debug vis)
-_OBJECT_SPAWN_LO = (-0.1, -0.6,  0.02)
-_OBJECT_SPAWN_HI = ( 0.1, -0.4,  0.03)
-# _OBJECT_SPAWN_LO = (-0.3, -0.7,  0.02)
-# _OBJECT_SPAWN_HI = ( 0.3, -0.3,  0.03)
+# Spawn / goal bounding boxes (local frame, used in events + debug vis).
+# Workspace is rotated 90° vs the old joint_1=90° config: cube is now in
+# front of the robot at x ≈ +0.5 instead of at y ≈ -0.5.
+_OBJECT_SPAWN_LO = ( 0.4, -0.1,  0.02)
+_OBJECT_SPAWN_HI = ( 0.6,  0.1,  0.03)
 
-_GOAL_LO = (-0.10, -0.60,  0.10)
-_GOAL_HI = ( 0.10, -0.40,  0.30)
-# _GOAL_LO = (-0.30, -0.70,  0.05)
-# _GOAL_HI = ( 0.30, -0.30,  0.40)
+_GOAL_LO = ( 0.40, -0.10,  0.10)
+_GOAL_HI = ( 0.60,  0.10,  0.30)
 
 # Gripper driver joint range [0, 0.8] (0=open, 0.8=closed)
 _GRIPPER_DRIVER_MAX = 0.8
@@ -335,8 +336,8 @@ def reset_object_position(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     object_entity_name: str = "cube",
-    x_range: tuple[float, float] = (-0.08, 0.03),
-    y_range: tuple[float, float] = (-0.55, -0.42),
+    x_range: tuple[float, float] = (0.42, 0.55),
+    y_range: tuple[float, float] = (-0.03, 0.08),
     z_range: tuple[float, float] = (0.19, 0.21),
 ) -> None:
     """Spawn the cube at a random position within the workspace."""
@@ -689,9 +690,9 @@ def _ramp_by_iter(
 def object_spawn_extent_curriculum(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
-    start_x: float = 0.10, end_x: float = 0.30,
-    start_y: float = 0.10, end_y: float = 0.20,
-    center_x: float = 0.0, center_y: float = -0.5,
+    start_x: float = 0.10, end_x: float = 0.20,
+    start_y: float = 0.10, end_y: float = 0.30,
+    center_x: float = 0.5, center_y: float = 0.0,
     z_lo: float = 0.02, z_hi: float = 0.03,
     num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
@@ -712,11 +713,11 @@ def object_spawn_extent_curriculum(
 def goal_extent_curriculum(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
-    start_x: float = 0.10, end_x: float = 0.30,
-    start_y: float = 0.10, end_y: float = 0.20,
+    start_x: float = 0.10, end_x: float = 0.20,
+    start_y: float = 0.10, end_y: float = 0.30,
     start_z_lo: float = 0.10, end_z_lo: float = 0.025,
     start_z_hi: float = 0.30, end_z_hi: float = 0.40,
-    center_x: float = 0.0, center_y: float = -0.5,
+    center_x: float = 0.5, center_y: float = 0.0,
     num_steps_per_env: int = 24,
 ) -> dict[str, torch.Tensor]:
     """Widen goal x/y extents and z range over training.
@@ -897,8 +898,8 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "object_entity_name": "cube",
-                "x_range": (-0.10, 0.10),
-                "y_range": (-0.60, -0.40),
+                "x_range": (0.40, 0.60),
+                "y_range": (-0.10, 0.10),
                 "z_range": (_OBJECT_SPAWN_LO[2], _OBJECT_SPAWN_HI[2]),
             },
         ),
@@ -972,11 +973,14 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", site_names=("pinch_site",)),
             },
         ),
-        # Phase 2: Cube reaches aerial goal (Gaussian, std=0.1)
+        # Phase 2: Cube reaches aerial goal (Gaussian, std=0.15).
+        # Rotated workspace: avg cube->goal chord ~0.20 m, so std=0.10 gave
+        # reward~0.02 at episode start — bumped to 0.15 for a healthier gradient
+        # (~0.17 at the average separation).
         "move_to_goal": RewardTermCfg(
             func=object_at_goal_reward,
             weight=1.0,
-            params={"std": 0.10},
+            params={"std": 0.15},
         ),
         # Tight placement bonus (Gaussian, std=0.05)
         "goal_precise": RewardTermCfg(
@@ -1103,20 +1107,20 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "object_spawn_extent": CurriculumTermCfg(
             func=object_spawn_extent_curriculum,
             params={
-                "start_x": 0.10, "end_x": 0.30,
-                "start_y": 0.10, "end_y": 0.20,
-                "center_x": 0.0, "center_y": -0.5,
+                "start_x": 0.10, "end_x": 0.20,
+                "start_y": 0.10, "end_y": 0.30,
+                "center_x": 0.5, "center_y": 0.0,
                 "z_lo": _OBJECT_SPAWN_LO[2], "z_hi": _OBJECT_SPAWN_HI[2],
             },
         ),
         "goal_extent": CurriculumTermCfg(
             func=goal_extent_curriculum,
             params={
-                "start_x": 0.10, "end_x": 0.30,
-                "start_y": 0.10, "end_y": 0.20,
+                "start_x": 0.10, "end_x": 0.20,
+                "start_y": 0.10, "end_y": 0.30,
                 "start_z_lo": 0.10, "end_z_lo": 0.025,
                 "start_z_hi": 0.30, "end_z_hi": 0.40,
-                "center_x": 0.0, "center_y": -0.5,
+                "center_x": 0.5, "center_y": 0.0,
             },
         ),
         "joint_delta": CurriculumTermCfg(
@@ -1192,13 +1196,13 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "y":   (-0.05, 0.05),
             "yaw": (-10.0 * _DEG_TO_RAD, 10.0 * _DEG_TO_RAD),
         }
-        cfg.events["reset_object_position"].params["x_range"] = (-0.30, 0.30)
-        cfg.events["reset_object_position"].params["y_range"] = (-0.70, -0.30)
+        cfg.events["reset_object_position"].params["x_range"] = (0.30, 0.70)
+        cfg.events["reset_object_position"].params["y_range"] = (-0.30, 0.30)
         cfg.events["reset_object_position"].params["z_range"] = (
             _OBJECT_SPAWN_LO[2], _OBJECT_SPAWN_HI[2],
         )
-        cfg.commands["object_goal"].x_range = (-0.30, 0.30)
-        cfg.commands["object_goal"].y_range = (-0.70, -0.30)
+        cfg.commands["object_goal"].x_range = (0.30, 0.70)
+        cfg.commands["object_goal"].y_range = (-0.30, 0.30)
         cfg.commands["object_goal"].z_range = (0.025, 0.40)
 
     return cfg
