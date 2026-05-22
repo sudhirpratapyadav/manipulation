@@ -31,6 +31,51 @@ Alternatively, using `uv`:
 uv pip install -e .
 ```
 
+### Local vs cluster setup (pyproject divergence)
+
+The local workstation and the SLURM cluster (`svs_ald` / dgx2) currently
+need **different pyproject configurations** because of a CUDA driver
+mismatch:
+
+| Where | GPU driver | Max CUDA runtime | torch       | mjlab branch        |
+| ----- | ---------- | ---------------- | ----------- | ------------------- |
+| Local | recent     | cu128+           | `>=2.7`     | `sudhir/main`       |
+| dgx2  | 550.54.15  | **cu124 only**   | `==2.6.0`   | `probe-local`       |
+
+**Why:** Upstream `mjlab>=1.3.0` requires `torch>=2.7`, but PyTorch's
+`+cu124` wheels stop at `torch==2.6.0`. The dgx2 driver 550 does not
+support cu128/cu130 wheels (needs driver ≥ 555 for cu128, ≥ 580 for
+cu130), so the cluster is pinned to `cu124` and therefore to
+`torch<2.7`. The cluster's local `mjlab` is parked on the
+`probe-local` branch which carries one extra commit (`ae21bc7f probe`)
+that downpins mjlab's own `torch>=2.7` floor to `torch>=2.6` so the
+resolver succeeds.
+
+**Cluster-local pyproject overrides** (kept as unstaged edits on
+`svs_ald:~/sudhir/manipulation/pyproject.toml`, NOT committed):
+
+```toml
+# dependencies: drop kortex-api (not on dgx2), add torch pin
+"torch>=2.6.0,<2.7.0",
+
+# uv.sources: add cu124 index, no protobuf override
+[tool.uv.sources]
+mjlab = { path = "../mjlab", editable = true }
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+```
+
+**Resolution plan:** ask cluster admin to upgrade the dgx2 driver from
+550.54.15 to 570.x or newer (A100 + Rocky 8.6 supports this; no kernel
+update needed). Once driver ≥ 555 is in place, the cluster can install
+`torch>=2.7+cu128`, the local-mjlab `probe-local` branch can be
+retired, and both environments collapse onto a single shared
+pyproject.
+
 ## Available Tasks
 
 Once installed, the task will be automatically registered with mjlab:
