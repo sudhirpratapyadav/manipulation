@@ -861,6 +861,15 @@ def kinova_pick_cube_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             posture_weight=0.0,
             posture_kp=10.0,
             posture_kd=2.0,
+            # Per-episode log-uniform DR of controller params (sim2real).
+            # Action scales span a wide multiplicative range (4-8x); kp/kd kept
+            # at +-5% for now (infra in place, tune later).
+            dr_delta_pos_scale_range=(0.0025, 0.02),
+            dr_delta_ori_scale_range=(0.005, 0.04),
+            dr_kp_pos_range=(47.5, 52.5),
+            dr_kd_pos_range=(9.5, 10.5),
+            dr_kp_ori_range=(47.5, 52.5),
+            dr_kd_ori_range=(9.5, 10.5),
         ),
         "gripper": GripperCtrlActionCfg(
             entity_name="robot",

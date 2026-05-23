@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -135,6 +136,32 @@ class OperationalSpaceActionCfg(ActionTermCfg):
   channel noise on a real robot. ``0.0`` (default) disables the noise.
   """
 
+  # ── Per-episode domain randomization of controller params ──────────────────
+  # Each range is an absolute ``(lo, hi)`` bound sampled LOG-uniformly once per
+  # episode reset, independently per environment. ``None`` (default) disables
+  # randomization for that param and the scalar value above is used unchanged.
+  #
+  # Log-uniform: ``v = exp(Uniform(ln lo, ln hi))`` — multiplicative symmetry,
+  # so e.g. halving and doubling the nominal are equally likely. Use for gains
+  # and scales, which act multiplicatively on the closed-loop dynamics.
+  dr_delta_pos_scale_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``delta_pos_scale`` (m per unit action)."""
+
+  dr_delta_ori_scale_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``delta_ori_scale`` (rad per unit action)."""
+
+  dr_kp_pos_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``kp_pos``."""
+
+  dr_kd_pos_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``kd_pos``."""
+
+  dr_kp_ori_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``kp_ori``."""
+
+  dr_kd_ori_range: tuple[float, float] | None = None
+  """Log-uniform ``(lo, hi)`` for ``kd_ori``."""
+
   def build(self, env: ManagerBasedRlEnv) -> OperationalSpaceAction:
     return OperationalSpaceAction(self, env)
 
@@ -211,6 +238,33 @@ class OperationalSpaceAction(ActionTerm):
       self.num_envs, self._num_joints, device=self.device
     )
 
+    # Per-episode controller-param tensors, shape (num_envs, 1) so they
+    # broadcast over the task-space error/velocity tensors. Initialized to the
+    # scalar cfg values; overwritten in reset() for params whose DR range is
+    # set. The (lo, hi) tuples are cached as log-bounds for cheap sampling.
+    def _col(v: float) -> torch.Tensor:
+      return torch.full((self.num_envs, 1), float(v), device=self.device)
+
+    self._delta_pos_scale = _col(cfg.delta_pos_scale)
+    self._delta_ori_scale = _col(cfg.delta_ori_scale)
+    self._kp_pos = _col(cfg.kp_pos)
+    self._kd_pos = _col(cfg.kd_pos)
+    self._kp_ori = _col(cfg.kp_ori)
+    self._kd_ori = _col(cfg.kd_ori)
+
+    self._dr_specs: tuple[tuple[torch.Tensor, tuple[float, float]], ...] = tuple(
+      (tensor, rng)
+      for tensor, rng in (
+        (self._delta_pos_scale, cfg.dr_delta_pos_scale_range),
+        (self._delta_ori_scale, cfg.dr_delta_ori_scale_range),
+        (self._kp_pos, cfg.dr_kp_pos_range),
+        (self._kd_pos, cfg.dr_kd_pos_range),
+        (self._kp_ori, cfg.dr_kp_ori_range),
+        (self._kd_ori, cfg.dr_kd_ori_range),
+      )
+      if rng is not None
+    )
+
   # ── ActionTerm interface ────────────────────────────────────────────────────
 
   @property
@@ -229,14 +283,14 @@ class OperationalSpaceAction(ActionTerm):
     frame_pos, frame_quat = self._get_frame_pose()
     if self._action_dim == 3:
       if self.cfg.use_relative_mode:
-        self._desired_pos[:] = frame_pos + actions * self.cfg.delta_pos_scale
+        self._desired_pos[:] = frame_pos + actions * self._delta_pos_scale
       else:
         self._desired_pos[:] = actions
       self._desired_quat[:] = frame_quat
     elif self._action_dim == 6:
       delta = actions.clone()
-      delta[:, :3] *= self.cfg.delta_pos_scale
-      delta[:, 3:] *= self.cfg.delta_ori_scale
+      delta[:, :3] *= self._delta_pos_scale
+      delta[:, 3:] *= self._delta_ori_scale
       target_pos, target_quat = apply_delta_pose(frame_pos, frame_quat, delta)
       self._desired_pos[:] = target_pos
       self._desired_quat[:] = target_quat
@@ -264,6 +318,13 @@ class OperationalSpaceAction(ActionTerm):
       ) * self.cfg.tau_offset_std_Nm
     else:
       self._tau_offset[env_ids] = 0.0
+
+    # Per-episode log-uniform DR of enabled controller params.
+    for tensor, (lo, hi) in self._dr_specs:
+      log_lo, log_hi = math.log(lo), math.log(hi)
+      shape = tensor[env_ids].shape
+      u = torch.rand(shape, device=self.device) * (log_hi - log_lo) + log_lo
+      tensor[env_ids] = torch.exp(u)
 
   # ── Core computation ────────────────────────────────────────────────────────
 
@@ -299,13 +360,13 @@ class OperationalSpaceAction(ActionTerm):
       w_pos = self.cfg.position_weight
       w_ori = self.cfg.orientation_weight
       ddx_des = torch.cat([
-        w_pos * (self.cfg.kp_pos * pos_error - self.cfg.kd_pos * vel_pos),
-        w_ori * (self.cfg.kp_ori * rot_error - self.cfg.kd_ori * vel_rot),
+        w_pos * (self._kp_pos * pos_error - self._kd_pos * vel_pos),
+        w_ori * (self._kp_ori * rot_error - self._kd_ori * vel_rot),
       ], dim=1)  # (B, 6)
     else:
       J = jacp  # (B, 3, n)
       ddx_des = self.cfg.position_weight * (
-        self.cfg.kp_pos * pos_error - self.cfg.kd_pos * vel_pos
+        self._kp_pos * pos_error - self._kd_pos * vel_pos
       )  # (B, 3)
 
     # Mass matrix for controlled joints: M (B, n, n).
