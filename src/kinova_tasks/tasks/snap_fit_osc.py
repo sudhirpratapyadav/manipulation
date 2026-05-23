@@ -77,14 +77,16 @@ _DEG_TO_RAD = 3.14159265358979 / 180.0
 # back_wall at x=+0.077.
 # Place socket so the prong sphere tips sit 1 mm before the flap inner plane — the
 # very first +X push sends the splayed sphere tips into the flap leading edges.
-_PRONG_TIP_X_AT_REST = 0.0506  # peg-local x of prong-sphere center at 14° splay
-# Stand-off between prong tips and socket flap_inner at reset (m). Robot must
-# travel +X by roughly this distance before the snap engages.
-_SOCKET_STANDOFF_X = 0.050
+_PRONG_TIP_X_AT_REST = 0.0944  # peg-local x of prong front-outer corner at 14° splay (80 mm prongs)
+# Socket flap_inner sits at peg_origin_x + _SOCKET_FLAP_INNER_OFFSET.
+# Negative value = socket entrance is *behind* the peg origin, so the peg
+# starts already inside the channel (good for live probing — prongs travel
+# through the long flap region before hitting the blocker).
+_SOCKET_FLAP_INNER_OFFSET = 0.030
 _SOCKET_DEFAULT_POS = (
-    _HOME_POS[0] + _PRONG_TIP_X_AT_REST + _SOCKET_STANDOFF_X,
+    _HOME_POS[0] + _SOCKET_FLAP_INNER_OFFSET,
     _HOME_POS[1],
-    _HOME_POS[2],
+    _HOME_POS[2] + 0.003,  # +3 mm in Z to nudge socket centerline above EE
 )
 
 

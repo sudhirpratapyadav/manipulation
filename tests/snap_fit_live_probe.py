@@ -167,6 +167,13 @@ def main() -> None:
     if hasattr(env_cfg, "episode_length_s"):
         env_cfg.episode_length_s = int(1e9)
 
+    # Deterministic reset: zero the arm-joint randomization so the EE (and
+    # the peg pinned to it) always lands at the same home pose. Otherwise
+    # the socket-relative alignment drifts between resets and the probe
+    # curves become unreproducible.
+    if "reset_robot_joints" in env_cfg.events:
+        env_cfg.events["reset_robot_joints"].params["joint_delta_deg"] = 0.0
+
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     env_wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 

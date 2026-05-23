@@ -1,121 +1,113 @@
 <?xml version="1.0"?>
 <!--
-  Snap-fit female socket: open-fronted box with entry-blocker spheres.
+  Snap-fit female socket: open-fronted box with entry-blocker boxes.
 
   Interior opening sizing (all dims in metres):
-    Y opening (between side wall inner faces)  = peg Y (14 mm) + 1 mm clearance
-                                                = 15 mm  → ±0.0075
-    Z opening (between flap inner faces)        = peg Z (42 mm) + sphere diameter
-                                                  (10 mm: peg prong sphere r=5 +
-                                                  socket blocker r=5) + 1 mm
-                                                = 53 mm  → ±0.0265
+    Y opening (between side wall inner faces)  = 15 mm  → ±0.0075
+    Z opening (between flap inner faces)        = 44 mm  → ±0.022
+                                                  (peg Z = 42 mm + 2 mm clearance)
 
-    Channel length:                              79 mm  (entrance → back wall)
-    Flap length:                                 30 mm  along X (entrance → flap_outer)
-    Latch slot (flap_outer → back_wall):         49 mm  along X
-                                                 — prong tips drop into this open
-                                                   region once past the blocker.
+    Channel length:                              94 mm  (entrance → back wall)
+    Flap length:                                 80 mm  along X (entrance → flap_outer)
+    Latch slot (flap_outer → back_wall):         12 mm  along X
     Wall thickness:                              2 mm everywhere
 
-  Coordinate frame:
-    Insertion direction = +X. Origin (0,0,0) = entrance plane (-X face of flaps).
+  Flaps (top + bot) are in geom group=3 so viser hides them by default —
+  toggle "Geom group 3" in the Scene panel to show them again. This lets you
+  see the prong-blocker interaction without losing the physical flap geometry.
+  (Per-geom rgba alpha is currently dropped by mjviser's batched mesh
+  renderer for mocap bodies, so transparency via rgba doesn't work; group
+  visibility is the available knob.)
 
-  Walls (all rigid, attached to mocap parent body):
-    • Top flap     : XY plane, -Z face at z=+0.0265, +Z face at z=+0.0285,
-                     length x∈[0, 0.030]
-    • Bottom flap  : XY plane, +Z face at z=-0.0265, -Z face at z=-0.0285,
-                     length x∈[0, 0.030]
-    • +Y side wall : XZ plane, -Y face at y=+0.0075, +Y face at y=+0.0095,
-                     length x∈[0, 0.079], Z half = 0.0285 (flush with flap outer)
-    • -Y side wall : XZ plane, +Y face at y=-0.0075, -Y face at y=-0.0095,
-                     length x∈[0, 0.079], Z half = 0.0285
-    • Back wall    : YZ plane, -X face at x=+0.077, Y half = 0.0095,
-                     Z half = 0.0285
+  Walls:
+    • Top flap     : XY plane, -Z face at z=+0.022, +Z face at z=+0.024,
+                     length x∈[0, 0.080]
+    • Bottom flap  : mirror of top.
+    • ±Y side wall : Inner face at y=±0.0075, length x∈[0, 0.094],
+                     Z half = 0.023 (flush with flap outer)
+    • Back wall    : -X face at x=+0.092, Y half = 0.0095, Z half = 0.023
 
-  Entry-blocker spheres (rigid, half-embedded in flap inner faces, at the BACK
-  of the flap):
-    • Top    : center (+0.025, 0, +0.0265), r=5 mm → hemisphere protrudes down
-                into the channel. Sphere tangent to flap_outer edge (x=+0.030).
-    • Bottom : center (+0.025, 0, -0.0265), r=5 mm → mirror.
-    Behind the blocker (x>+0.030) the channel opens up to the full 53 mm Z
-    interior — prong tips drop in and latch.
+  Entry-blocker BOXES (half-embedded in flap inner faces, at the BACK of the
+  flap so the prong arm travels the full flap length before hitting them):
+    • Top : center (+0.075, 0, +0.022), half (0.005, 0.007, 0.005)
+            → protrudes 5 mm down into the channel, 10 mm long in X,
+            tangent to flap_outer at x=+0.080.
+    • Bot : mirror of top.
+    Constraint: solref="0.005 1" solimp="0.99 0.999 0.001 0.5 2" — stiff so
+    the prong actually has to deflect to pass instead of phasing through.
 
   Sites:
     flap_inner    — x=0, entrance plane
-    flap_outer    — x=+0.030, where prong tips escape into the slot
-    back_wall     — x=+0.077
-    seated_target — peg origin target when fully seated (prong sphere centers
-                    reach back wall)
+    flap_outer    — x=+0.080
+    back_wall     — x=+0.092
+    seated_target — x=+0.080  (placeholder; success metric not meaningful
+                    while the snap geometry is still being tuned)
 -->
 <mujoco model="snap_socket">
   <worldbody>
     <body name="snap_socket" mocap="true">
 
-      <!-- ===== Top flap (XY plane, +Z side) =====
-           size: 15 (X half) × 9.5 (Y half) × 1 (Z half) → 30 × 19 × 2 mm
-           pos:  x=+0.015 (centers x∈[0, 0.030]),  z=+0.0275 → -Z face at z=+0.0265 -->
-      <geom type="box" name="socket_top_flap"
-            size="0.015 0.0095 0.001"
-            pos="0.015 0 0.0275"
+      <!-- ===== Top flap =====
+           size: 40 (X half) × 9.5 (Y half) × 1 (Z half) → 80 × 19 × 2 mm
+           pos:  x=+0.040 (centers x∈[0, 0.080]),  z=+0.023 -->
+      <!-- group="3" → hide from viser by default so the prong/blocker is visible.
+           Toggle "Geom group 3" in the viser Scene panel to show again. -->
+      <geom type="box" name="socket_top_flap" group="3"
+            size="0.040 0.0095 0.001"
+            pos="0.040 0 0.023"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
-      <!-- ===== Bottom flap (XY plane, -Z side) ===== -->
-      <geom type="box" name="socket_bot_flap"
-            size="0.015 0.0095 0.001"
-            pos="0.015 0 -0.0275"
+      <!-- ===== Bottom flap ===== -->
+      <geom type="box" name="socket_bot_flap" group="3"
+            size="0.040 0.0095 0.001"
+            pos="0.040 0 -0.023"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
-      <!-- ===== Side walls (XZ plane, ±Y faces) =====
-           Span x=[0, 0.079] (entrance through back wall). Inner face at y=±0.0075.
-           Z half=0.0285 → flush with flap outer faces at z=±0.0285.
-           size: 0.0395 (X half) × 0.001 (Y half) × 0.0285 (Z half) → 79 × 2 × 57 mm
-           pos:  x=+0.0395,  y=±0.0085 (overlaps flap Y by 1 mm for clean corners) -->
+      <!-- ===== Side walls (±Y) =====
+           Span x=[0, 0.094]. Inner face y=±0.0075, outer y=±0.0095.
+           size: 0.047 (X half) × 0.001 (Y half) × 0.023 (Z half) -->
       <geom type="box" name="socket_side_pos_y"
-            size="0.0395 0.001 0.0285"
-            pos="0.0395 0.0085 0"
+            size="0.047 0.001 0.023"
+            pos="0.047 0.0085 0"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
       <geom type="box" name="socket_side_neg_y"
-            size="0.0395 0.001 0.0285"
-            pos="0.0395 -0.0085 0"
+            size="0.047 0.001 0.023"
+            pos="0.047 -0.0085 0"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
-      <!-- ===== Entry-blocker spheres, half-embedded in flap inner faces, at the
-           BACK of the flap (x=+0.025, sphere tangent to flap_outer at x=+0.030).
-           Once the peg pushes its prong-tip sphere past this point, the tips
-           drop into the open latch region behind the flap — this is the snap. -->
-      <geom type="sphere" name="socket_entry_blocker_top"
-            size="0.005"
-            pos="0.025 0 0.0265"
+      <!-- ===== Entry-blocker boxes at flap back (x=+0.075) ===== -->
+      <geom type="box" name="socket_entry_blocker_top"
+            size="0.005 0.007 0.005"
+            pos="0.075 0 0.022"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
-            solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
-      <geom type="sphere" name="socket_entry_blocker_bot"
-            size="0.005"
-            pos="0.025 0 -0.0265"
+            solref="0.005 1" solimp="0.99 0.999 0.001 0.5 2"/>
+      <geom type="box" name="socket_entry_blocker_bot"
+            size="0.005 0.007 0.005"
+            pos="0.075 0 -0.022"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
-            solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+            solref="0.005 1" solimp="0.99 0.999 0.001 0.5 2"/>
 
       <!-- ===== Back wall (YZ plane, +X end) =====
-           size: 0.001 (X half) × 0.0095 (Y half) × 0.0285 (Z half) → 2 × 19 × 57 mm
-           pos:  x=+0.078 → -X face at x=+0.077 (49 mm gap past flap outer edge) -->
+           pos x=+0.093 → -X face at x=+0.092 -->
       <geom type="box" name="socket_back_wall"
-            size="0.001 0.0095 0.0285"
-            pos="0.078 0 0"
+            size="0.001 0.0095 0.023"
+            pos="0.093 0 0"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
@@ -123,12 +115,9 @@
 
       <!-- ===== Sites ===== -->
       <site name="flap_inner"    pos="0     0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
-      <site name="flap_outer"    pos="0.030 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
-      <site name="back_wall"     pos="0.077 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
-      <!-- Peg seats here: prong sphere centers (at peg-local x=0.0506 from origin
-           at 14° splay) reach the back wall (x=+0.077). So peg origin target X
-           = 0.077 - 0.0506 = 0.0264. -->
-      <site name="seated_target" pos="0.0264 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
+      <site name="flap_outer"    pos="0.080 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
+      <site name="back_wall"     pos="0.092 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
+      <site name="seated_target" pos="0.080 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
 
     </body>
   </worldbody>

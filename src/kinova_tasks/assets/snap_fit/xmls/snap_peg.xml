@@ -19,16 +19,18 @@
 
     Base        :  30 × 14 × 42 mm (X × Y × Z)  — gripped by Robotiq pads (clamp along Y, 14 mm)
                    half-extents = (0.015, 0.007, 0.021)
-    Prong arm   :  cuboid, 40 × 14 × 14 mm (length × Y × Z), half-extents (0.020, 0.007, 0.007)
-                   centered at arm-local x=+0.020 → spans x∈[0, 0.040] along arm
-    Latch sphere:  5 mm radius, on prong OUTER face (top: +Z face, bot: -Z face),
-                   center at arm-local (0.035, 0, ±0.007) — hemisphere outside arm,
-                   fully inside arm length so the +X end stays a flat square face
+    Prong arm   :  cuboid, 80 × 14 × 14 mm (length × Y × Z), half-extents (0.040, 0.007, 0.007)
+                   centered at arm-local x=+0.040 → spans x∈[0, 0.080] along arm
+    Latch sphere:  REMOVED — bare cuboid arm is the contact surface. The socket
+                   blocker sphere catches on the arm +X end (flat square face).
     Pivot Z     :  ±0.014 (so prong outer face is flush with base outer face at z=±0.021)
     Hinge axis  :  Y → prongs deflect in the X-Z plane
     Hinge range :  top  [-0.45, 0] rad  (0 = rest splayed; negative = bent inward)
                    bot  [ 0, +0.45] rad
-    Spring      :  stiffness 0.5 N·m/rad, damping 0.02, ref=0
+    Spring      :  stiffness 20.0 N·m/rad, damping 1.0, ref=0  (40× from baseline,
+                   paired with 80 mm arm gives ~16 N restoring force per prong at
+                   5 mm tip deflection — enough resistance to feel a snap without
+                   making the prong rigid)
     Soft-limit  :  very stiff (solreflimit=0.005, solimplimit 0.99 0.999)
                    → linear early, sharp non-linear ramp near max bend (the "snap")
 
@@ -37,8 +39,8 @@
     base_back           — back face of base (gripper grasp ref)
     lip_top_pivot       — top hinge axis (used for "past flap" check)
     lip_bot_pivot       — bottom hinge axis
-    lip_top_tip         — sphere center of top prong at rest
-    lip_bot_tip         — sphere center of bottom prong at rest
+    lip_top_tip         — front-outer corner of top prong arm
+    lip_bot_tip         — front-outer corner of bottom prong arm
 -->
 <mujoco model="snap_peg">
   <worldbody>
@@ -68,59 +70,44 @@
       <body name="lip_top" pos="0.015 0 0.014" euler="0 -0.244 0">
         <joint name="lip_top_hinge" type="hinge" axis="0 1 0"
                range="-0.45 0" limited="true"
-               springref="0" stiffness="0.5" damping="0.02"
+               springref="0" stiffness="20.0" damping="1.0"
                armature="0.0001"
                solreflimit="0.005 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
         <!-- Cuboid arm: 40 mm long along body-+X, 14 × 14 mm cross-section.
              Centered at x=+0.020 so it spans x∈[0, 0.040]. -->
         <geom type="box" name="lip_top_arm"
-              size="0.020 0.007 0.007"
-              pos="0.020 0 0"
+              size="0.040 0.007 0.007"
+              pos="0.040 0 0"
               mass="0.0010" rgba="0.10 0.45 0.75 1.0"
               condim="4" friction="3 0.1 0.01"
               contype="1" conaffinity="1"
               solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
-        <!-- Latch sphere on OUTER (+Z) face, half-embedded (hemisphere outside).
-             Center at z=+0.007 (on the outer face plane), x=+0.035 so the sphere
-             is fully inside the arm length (sphere bounds x∈[0.030,0.040]), leaving
-             the +X end as a flat square cross-section. -->
-        <geom type="sphere" name="lip_top_ball"
-              size="0.005"
-              pos="0.035 0 0.007"
-              mass="0.0005" rgba="0.10 0.45 0.75 1.0"
-              condim="4" friction="3 0.1 0.01"
-              contype="1" conaffinity="1"
-              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+        <!-- No latch sphere — the bare cuboid arm is the contact surface.
+             The socket blocker sphere catches on the +X end of the arm. -->
 
         <site name="lip_top_pivot" pos="0 0 0"         size="0.0008" rgba="1 0.5 0 1" group="4"/>
-        <site name="lip_top_tip"   pos="0.035 0 0.007" size="0.0008" rgba="1 0.5 0 1" group="4"/>
+        <!-- Tip site at the front-outer corner of the arm (+X, +Z face). -->
+        <site name="lip_top_tip"   pos="0.080 0 0.007" size="0.0008" rgba="1 0.5 0 1" group="4"/>
       </body>
 
       <!-- ===== Bottom prong: mirror of top prong ===== -->
       <body name="lip_bot" pos="0.015 0 -0.014" euler="0 0.244 0">
         <joint name="lip_bot_hinge" type="hinge" axis="0 1 0"
                range="0 0.45" limited="true"
-               springref="0" stiffness="0.5" damping="0.02"
+               springref="0" stiffness="20.0" damping="1.0"
                armature="0.0001"
                solreflimit="0.005 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
         <geom type="box" name="lip_bot_arm"
-              size="0.020 0.007 0.007"
-              pos="0.020 0 0"
+              size="0.040 0.007 0.007"
+              pos="0.040 0 0"
               mass="0.0010" rgba="0.10 0.45 0.75 1.0"
               condim="4" friction="3 0.1 0.01"
               contype="1" conaffinity="1"
               solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
-        <!-- Latch sphere on OUTER (-Z) face for the bottom prong, mirror of top. -->
-        <geom type="sphere" name="lip_bot_ball"
-              size="0.005"
-              pos="0.035 0 -0.007"
-              mass="0.0005" rgba="0.10 0.45 0.75 1.0"
-              condim="4" friction="3 0.1 0.01"
-              contype="1" conaffinity="1"
-              solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
+        <!-- No latch sphere — bare cuboid arm. -->
 
         <site name="lip_bot_pivot" pos="0 0 0"          size="0.0008" rgba="1 0.5 0 1" group="4"/>
-        <site name="lip_bot_tip"   pos="0.035 0 -0.007" size="0.0008" rgba="1 0.5 0 1" group="4"/>
+        <site name="lip_bot_tip"   pos="0.080 0 -0.007" size="0.0008" rgba="1 0.5 0 1" group="4"/>
       </body>
     </body>
   </worldbody>
