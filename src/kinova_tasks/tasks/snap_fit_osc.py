@@ -18,10 +18,8 @@ from kinova_tasks.assets.snap_fit import get_snap_peg_cfg, get_snap_socket_cfg
 from kinova_tasks.tasks.actions.osc import OperationalSpaceActionCfg
 from kinova_tasks.tasks.base_rl_cfg import kinova_ppo_runner_cfg
 from kinova_tasks.tasks.peg_in_hole_osc import (
-    GRIPPER_CLOSED_JOINT_POS,
     GRIPPER_JOINT_NAMES,
     reset_gripper_ctrl_closed,
-    reset_gripper_joints_closed,
 )
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -72,18 +70,66 @@ _HOME_POS = (0.733607, -0.024850, 0.523015)
 _DEG_TO_RAD = 3.14159265358979 / 180.0
 
 # Socket placement.
-# Peg-local frame: base half-extent in X = 0.015, lip pivots at peg-local x=+0.015
-# (right at the base front face). Lip arms 18 mm long, splayed at 14° → sphere
-# tips at peg-local (~+0.0325, 0, ±0.0094) at rest.
-# Socket-local frame: flap_inner at x=0 (entrance plane), flap_outer at x=+0.030,
-# back_wall flush at x=+0.030.
-# Place socket so the lip pivots sit 1 mm before the flap inner edge — the very
-# first +X push sends the splayed sphere tips into the flap leading edges.
+# Peg-local frame: base half-extent in X = 0.015, prong pivots at peg-local x=+0.015
+# (right at the base front face). Prong arms 40 mm long, splayed at 14° → sphere
+# tips at peg-local (~+0.0538, 0, ±0.0237) at rest.
+# Socket-local frame: flap_inner at x=0 (entrance plane), flap_outer at x=+0.065,
+# back_wall at x=+0.077.
+# Place socket so the prong sphere tips sit 1 mm before the flap inner plane — the
+# very first +X push sends the splayed sphere tips into the flap leading edges.
+_PRONG_TIP_X_AT_REST = 0.0506  # peg-local x of prong-sphere center at 14° splay
+# Stand-off between prong tips and socket flap_inner at reset (m). Robot must
+# travel +X by roughly this distance before the snap engages.
+_SOCKET_STANDOFF_X = 0.050
 _SOCKET_DEFAULT_POS = (
-    _HOME_POS[0] + 0.015 + 0.001,
+    _HOME_POS[0] + _PRONG_TIP_X_AT_REST + _SOCKET_STANDOFF_X,
     _HOME_POS[1],
     _HOME_POS[2],
 )
+
+
+# ---------------------------------------------------------------------------
+# Tighter closed-gripper pose for snap-fit (driver ~94% closed, matching ctrl=240).
+# Robotiq 2F-85 driver joint range is [0, 0.8]; 0.753 ≈ 240/255.
+# Other joints scaled from the 60%-closed reference (driver=0.503).
+# ---------------------------------------------------------------------------
+_SNAP_FIT_GRIPPER_CLOSED = {
+    "right_driver_joint":      0.753,
+    "right_coupler_joint":     0.0015,
+    "right_spring_link_joint": 0.756,
+    "right_follower_joint":   -0.726,
+    "left_driver_joint":       0.753,
+    "left_coupler_joint":      0.0015,
+    "left_spring_link_joint":  0.756,
+    "left_follower_joint":    -0.726,
+}
+
+
+def reset_gripper_joints_snap_fit_closed(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot", joint_names=GRIPPER_JOINT_NAMES
+    ),
+) -> None:
+    """Write the snap-fit tighter closed-pose values for all 8 gripper joints."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    robot: Entity = env.scene[asset_cfg.name]
+    n = len(env_ids)
+    nj = len(_SNAP_FIT_GRIPPER_CLOSED)
+
+    pos = torch.tensor(
+        list(_SNAP_FIT_GRIPPER_CLOSED.values()), device=env.device
+    ).unsqueeze(0).expand(n, -1).clone()
+    vel = torch.zeros(n, nj, device=env.device)
+
+    joint_ids = asset_cfg.joint_ids
+    if isinstance(joint_ids, list):
+        joint_ids = torch.tensor(joint_ids, device=env.device)
+
+    robot.write_joint_state_to_sim(pos, vel, joint_ids=joint_ids, env_ids=env_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +514,7 @@ def kinova_snap_fit_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"entity_name": "robot", "joint_delta_deg": 2.0},
         ),
         "reset_gripper_joints": EventTermCfg(
-            func=reset_gripper_joints_closed,
+            func=reset_gripper_joints_snap_fit_closed,
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=GRIPPER_JOINT_NAMES),
@@ -479,7 +525,7 @@ def kinova_snap_fit_osc_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", actuator_names=("fingers_actuator",)),
-                "closed_ctrl": 191.25,
+                "closed_ctrl": 240.0,
             },
         ),
         "reset_socket_position": EventTermCfg(

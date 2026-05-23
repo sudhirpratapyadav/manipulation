@@ -2,52 +2,61 @@
 <!--
   Snap-fit female socket: open-fronted box with entry-blocker spheres.
 
-  Geometry summary (all dims in metres):
+  Interior opening sizing (all dims in metres):
+    Y opening (between side wall inner faces)  = peg Y (14 mm) + 1 mm clearance
+                                                = 15 mm  → ±0.0075
+    Z opening (between flap inner faces)        = peg Z (42 mm) + sphere diameter
+                                                  (10 mm: peg prong sphere r=5 +
+                                                  socket blocker r=5) + 1 mm
+                                                = 53 mm  → ±0.0265
 
-    Channel cross-section (interior clear):  24 (Y) × 24 (Z) mm
-    Channel length:                          42 mm  (entrance plane → back wall)
-    Slot/gap (between flap outer edge and back wall): 12 mm  along X
-                                             — this is where the lip spheres pop
-                                                out and latch.
-    Wall thickness:                          2 mm everywhere
+    Channel length:                              79 mm  (entrance → back wall)
+    Flap length:                                 30 mm  along X (entrance → flap_outer)
+    Latch slot (flap_outer → back_wall):         49 mm  along X
+                                                 — prong tips drop into this open
+                                                   region once past the blocker.
+    Wall thickness:                              2 mm everywhere
 
   Coordinate frame:
     Insertion direction = +X. Origin (0,0,0) = entrance plane (-X face of flaps).
 
   Walls (all rigid, attached to mocap parent body):
-    • Top flap     : XY plane, -Z face at z=+0.012, length x∈[0, 0.030]
-    • Bottom flap  : XY plane, +Z face at z=-0.012, length x∈[0, 0.030]
-    • +Y side wall : XZ plane, -Y face at y=+0.012, length x∈[0, 0.042]
-    • -Y side wall : XZ plane, +Y face at y=-0.012, length x∈[0, 0.042]
-    • Back wall    : YZ plane, -X face at x=+0.042, full Y×Z 28×28 mm
+    • Top flap     : XY plane, -Z face at z=+0.0265, +Z face at z=+0.0285,
+                     length x∈[0, 0.030]
+    • Bottom flap  : XY plane, +Z face at z=-0.0265, -Z face at z=-0.0285,
+                     length x∈[0, 0.030]
+    • +Y side wall : XZ plane, -Y face at y=+0.0075, +Y face at y=+0.0095,
+                     length x∈[0, 0.079], Z half = 0.0285 (flush with flap outer)
+    • -Y side wall : XZ plane, +Y face at y=-0.0075, -Y face at y=-0.0095,
+                     length x∈[0, 0.079], Z half = 0.0285
+    • Back wall    : YZ plane, -X face at x=+0.077, Y half = 0.0095,
+                     Z half = 0.0285
 
-    The flaps end at x=+0.030; the side walls + back wall continue to x=+0.042.
-    The 12 mm gap between flap outer edge and back wall is the latch slot.
-
-  Entry-blocker spheres (rigid, on flap inner faces at x=0):
-    • Top    : center (0, 0, +0.009), r=2 mm  → bottom face at z=+0.007
-    • Bottom : center (0, 0, -0.009), r=2 mm  → top face at z=-0.007
-    Vertical clear opening at entrance = 14 mm (between blocker faces).
-    Peg lip spheres (r=5 mm) at rest extend to z=±0.014 → must squeeze ~7 mm
-    at the tip to enter. Once inside, mild squeeze remains until lips exit
-    past flap outer edge.
+  Entry-blocker spheres (rigid, half-embedded in flap inner faces, at the BACK
+  of the flap):
+    • Top    : center (+0.025, 0, +0.0265), r=5 mm → hemisphere protrudes down
+                into the channel. Sphere tangent to flap_outer edge (x=+0.030).
+    • Bottom : center (+0.025, 0, -0.0265), r=5 mm → mirror.
+    Behind the blocker (x>+0.030) the channel opens up to the full 53 mm Z
+    interior — prong tips drop in and latch.
 
   Sites:
     flap_inner    — x=0, entrance plane
-    flap_outer    — x=+0.030, where lips escape into the slot
-    back_wall     — x=+0.042
-    seated_target — peg origin target when fully seated (peg_base back at back wall)
+    flap_outer    — x=+0.030, where prong tips escape into the slot
+    back_wall     — x=+0.077
+    seated_target — peg origin target when fully seated (prong sphere centers
+                    reach back wall)
 -->
 <mujoco model="snap_socket">
   <worldbody>
     <body name="snap_socket" mocap="true">
 
       <!-- ===== Top flap (XY plane, +Z side) =====
-           size: 15 (X half) × 13 (Y half) × 1 (Z half) → 30 × 26 × 2 mm
-           pos:  x=+0.015 (centers x∈[0, 0.030]),  z=+0.013 → -Z face at z=+0.012 -->
+           size: 15 (X half) × 9.5 (Y half) × 1 (Z half) → 30 × 19 × 2 mm
+           pos:  x=+0.015 (centers x∈[0, 0.030]),  z=+0.0275 → -Z face at z=+0.0265 -->
       <geom type="box" name="socket_top_flap"
-            size="0.015 0.013 0.001"
-            pos="0.015 0 0.013"
+            size="0.015 0.0095 0.001"
+            pos="0.015 0 0.0275"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
@@ -55,55 +64,58 @@
 
       <!-- ===== Bottom flap (XY plane, -Z side) ===== -->
       <geom type="box" name="socket_bot_flap"
-            size="0.015 0.013 0.001"
-            pos="0.015 0 -0.013"
+            size="0.015 0.0095 0.001"
+            pos="0.015 0 -0.0275"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- ===== Side walls (XZ plane, ±Y faces) =====
-           Span x=[0, 0.042] (entrance through back wall). Inner face at y=±0.012.
-           Height matches back wall (z=±0.014).
-           size: 0.021 (X half) × 0.001 (Y half) × 0.014 (Z half) → 42 × 2 × 28 mm
-           pos:  x=+0.021,  y=±0.013 (overlaps flap Y by 1 mm for clean corners) -->
+           Span x=[0, 0.079] (entrance through back wall). Inner face at y=±0.0075.
+           Z half=0.0285 → flush with flap outer faces at z=±0.0285.
+           size: 0.0395 (X half) × 0.001 (Y half) × 0.0285 (Z half) → 79 × 2 × 57 mm
+           pos:  x=+0.0395,  y=±0.0085 (overlaps flap Y by 1 mm for clean corners) -->
       <geom type="box" name="socket_side_pos_y"
-            size="0.021 0.001 0.014"
-            pos="0.021 0.013 0"
+            size="0.0395 0.001 0.0285"
+            pos="0.0395 0.0085 0"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
       <geom type="box" name="socket_side_neg_y"
-            size="0.021 0.001 0.014"
-            pos="0.021 -0.013 0"
+            size="0.0395 0.001 0.0285"
+            pos="0.0395 -0.0085 0"
             rgba="0.85 0.35 0.15 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
-      <!-- ===== Entry-blocker spheres at flap inner faces (x=0) ===== -->
+      <!-- ===== Entry-blocker spheres, half-embedded in flap inner faces, at the
+           BACK of the flap (x=+0.025, sphere tangent to flap_outer at x=+0.030).
+           Once the peg pushes its prong-tip sphere past this point, the tips
+           drop into the open latch region behind the flap — this is the snap. -->
       <geom type="sphere" name="socket_entry_blocker_top"
-            size="0.002"
-            pos="0 0 0.009"
+            size="0.005"
+            pos="0.025 0 0.0265"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
       <geom type="sphere" name="socket_entry_blocker_bot"
-            size="0.002"
-            pos="0 0 -0.009"
+            size="0.005"
+            pos="0.025 0 -0.0265"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
             solref="0.01 1" solimp="0.95 0.99 0.001 0.5 2"/>
 
       <!-- ===== Back wall (YZ plane, +X end) =====
-           size: 0.001 (X half) × 0.014 (Y half) × 0.014 (Z half) → 2 × 28 × 28 mm
-           pos:  x=+0.043 → -X face at x=+0.042 (12 mm gap past flap outer edge) -->
+           size: 0.001 (X half) × 0.0095 (Y half) × 0.0285 (Z half) → 2 × 19 × 57 mm
+           pos:  x=+0.078 → -X face at x=+0.077 (49 mm gap past flap outer edge) -->
       <geom type="box" name="socket_back_wall"
-            size="0.001 0.014 0.014"
-            pos="0.043 0 0"
+            size="0.001 0.0095 0.0285"
+            pos="0.078 0 0"
             rgba="0.95 0.50 0.20 1.0"
             condim="4" friction="1.0 0.05 0.005"
             contype="1" conaffinity="1"
@@ -112,10 +124,11 @@
       <!-- ===== Sites ===== -->
       <site name="flap_inner"    pos="0     0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
       <site name="flap_outer"    pos="0.030 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
-      <site name="back_wall"     pos="0.042 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
-      <!-- Peg seats here: peg_base back face (0.015 in front of peg origin)
-           reaches the back wall (x=+0.042). So peg origin target X = 0.027. -->
-      <site name="seated_target" pos="0.027 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
+      <site name="back_wall"     pos="0.077 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
+      <!-- Peg seats here: prong sphere centers (at peg-local x=0.0506 from origin
+           at 14° splay) reach the back wall (x=+0.077). So peg origin target X
+           = 0.077 - 0.0506 = 0.0264. -->
+      <site name="seated_target" pos="0.0264 0 0" size="0.0008" rgba="0 1 1 1" group="4"/>
 
     </body>
   </worldbody>
